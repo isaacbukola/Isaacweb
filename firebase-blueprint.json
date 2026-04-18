@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "A portfolio project entry",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "linkUrl": { "type": "string" },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "order": { "type": "number" }
+      },
+      "required": ["title", "category", "linkUrl", "description", "tags"]
+    },
+    "AboutContent": {
+      "title": "AboutContent",
+      "description": "Content for the about section",
+      "type": "object",
+      "properties": {
+        "badge": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "image": { "type": "string" }
+      },
+      "required": ["badge", "title", "description", "image"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Portfolio projects collection"
+    },
+    "/settings/about": {
+      "schema": "AboutContent",
+      "description": "Global about section settings"
+    }
+  }
+}
