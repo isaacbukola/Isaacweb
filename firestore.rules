@@ -1,42 +1,54 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global safety net
+    // Default deny
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // Helper functions
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function isValidProject(data) {
-      return data.keys().hasAll(['title', 'category', 'linkUrl', 'description', 'tags', 'order'])
-        && data.title is string && data.title.size() <= 200
-        && data.category is string && data.category.size() <= 100
-        && data.linkUrl is string && data.linkUrl.size() <= 1000
-        && data.description is string && data.description.size() <= 2000
-        && data.tags is list
-        && data.order is number;
+    function incoming() {
+      return request.resource.data;
     }
 
-    function isValidAbout(data) {
-      return data.keys().hasAll(['badge', 'title', 'description', 'image'])
-        && data.badge is string && data.badge.size() <= 100
-        && data.title is string && data.title.size() <= 500
-        && data.description is string && data.description.size() <= 5000
-        && data.image is string && data.image.size() <= 1000;
+    function existing() {
+      return resource.data;
     }
 
-    match /projects/{projectId} {
-      allow read: if true;
-      allow create, update: if isValidId(projectId) && isValidProject(request.resource.data);
-      allow delete: if isValidId(projectId);
+    function isValidSecret(data) {
+      return data.encryptedData is string && data.encryptedData.size() <= 100000 &&
+             data.iv is string && data.iv.size() <= 64 &&
+             data.salt is string && data.salt.size() <= 64 &&
+             data.viewLimit is number && data.viewLimit >= 1 && data.viewLimit <= 999999 &&
+             data.viewCount is number && data.viewCount >= 0 &&
+             data.createdAt is timestamp;
     }
 
-    match /settings/about {
-      allow read: if true;
-      allow write: if isValidAbout(request.resource.data);
+    match /secrets/{secretId} {
+      // Anyone can create a secret
+      allow create: if isValidId(secretId) && 
+                      isValidSecret(incoming()) && 
+                      incoming().viewCount == 0 &&
+                      incoming().createdAt == request.time;
+
+      // Anyone can get a secret IF the view limit hasn't been reached
+      // Note: We don't check for password here because encryption is client-side.
+      // But we prevent reading if it's "spent".
+      allow get: if existing().viewCount < existing().viewLimit;
+
+      // Allow updating ONLY the viewCount
+      allow update: if isValidSecret(incoming()) &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['viewCount']) &&
+                      incoming().viewCount == existing().viewCount + 1 &&
+                      incoming().viewCount <= existing().viewLimit;
+      
+      // No deletion allowed by clients (keep it simple for now)
+      allow delete: if false;
     }
   }
 }

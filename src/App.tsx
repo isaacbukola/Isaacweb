@@ -1,1088 +1,961 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  ArrowRight, 
-  ExternalLink, 
-  Instagram, 
-  Mail, 
-  Menu, 
-  X, 
-  Globe, 
-  Layout, 
-  Zap, 
-  Shield, 
-  Smartphone, 
-  Code2,
+  Lock, 
+  Send, 
+  Copy, 
+  Check, 
+  Eye, 
+  EyeOff, 
+  RefreshCcw, 
+  Trash2, 
+  ShieldCheck,
+  AlertCircle,
+  Key as KeyIcon,
+  Unlock,
+  Link,
   ChevronRight,
-  Phone,
-  MapPin,
-  Plus,
-  Edit2,
-  Trash2,
-  Lock,
-  Settings,
-  Eye
+  Share2,
+  Moon,
+  Sun,
+  Upload,
+  FileText,
+  X,
+  Download
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Badge } from '@/components/ui/badge';
 import { db } from './lib/firebase';
 import { 
-  collection, 
   doc, 
-  getDocs, 
   getDoc, 
   setDoc, 
-  addDoc, 
-  deleteDoc, 
-  query, 
-  orderBy, 
-  onSnapshot
+  updateDoc, 
+  increment,
+  serverTimestamp 
 } from 'firebase/firestore';
+import { encryptMessage, decryptMessage } from './lib/crypto';
+import { nanoid } from 'nanoid';
 
-const initialProjects = [
-  {
-    title: "Ethereal Commerce",
-    category: "E-commerce",
-    linkUrl: "https://ethereal-commerce.com",
-    description: "A high-end fashion marketplace with seamless transitions.",
-    tags: ["React", "Motion", "Tailwind"]
-  },
-  {
-    title: "Nexus Dashboard",
-    category: "SaaS",
-    linkUrl: "https://nexus-dashboard.io",
-    description: "Real-time analytics for modern enterprises.",
-    tags: ["TypeScript", "D3.js"]
-  },
-  {
-    title: "Aura Wellness",
-    category: "Lifestyle",
-    linkUrl: "https://aura-wellness.app",
-    description: "Meditation app with atmospheric design.",
-    tags: ["Mobile", "UI/UX"]
-  }
-];
+// Branding constants
+const APP_NAME = "IDB SECRET MESSAGE";
+const PUBLIC_BASE_URL = "https://ais-pre-dmeg54kczs4raume2zyf4x-298283305183.europe-west1.run.app";
 
-const services = [
-  {
-    icon: <Globe className="w-6 h-6" />,
-    title: "Custom Web Development",
-    description: "Building bespoke, high-performance websites from scratch tailored to your unique business needs."
-  },
-  {
-    icon: <Zap className="w-6 h-6" />,
-    title: "Maintenance & Fixing",
-    description: "Expert troubleshooting, bug fixing, and regular maintenance to keep your site running perfectly."
-  },
-  {
-    icon: <Smartphone className="w-6 h-6" />,
-    title: "Responsive Redesign",
-    description: "Modernizing outdated websites to look stunning and function flawlessly on all mobile and desktop devices."
-  },
-  {
-    icon: <Shield className="w-6 h-6" />,
-    title: "SEO & Security",
-    description: "Optimizing your site for search engines and implementing robust security patches to protect your data."
-  },
-  {
-    icon: <Layout className="w-6 h-6" />,
-    title: "CMS & E-commerce",
-    description: "Setting up and managing WordPress, Shopify, and custom stores with secure payment integrations."
-  },
-  {
-    icon: <Code2 className="w-6 h-6" />,
-    title: "Technical Support",
-    description: "Providing reliable hosting setup, domain management, and ongoing technical assistance."
-  }
-];
+type ViewState = 'LANDING' | 'CREATE' | 'DISCOVER' | 'SUCCESS' | 'RETRIEVE' | 'REVEALED' | 'EXPIRED' | 'ERROR' | 'LOADING' | 'ABOUT' | 'SECURITY' | 'HOW_IT_WORKS' | 'CONTACT';
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'portfolio'>('home');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  
-  // Admin State
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [logoTapCount, setLogoTapCount] = useState(0);
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [adminError, setAdminError] = useState('');
-  const [portfolioProjects, setPortfolioProjects] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [showProjectModal, setShowProjectModal] = useState(false);
-  const [showAboutModal, setShowAboutModal] = useState(false);
-  const [aboutContent, setAboutContent] = useState({
-    badge: 'The Philosophy',
-    title: 'Design that works as good as it looks.',
-    description: 'I strip away the noise to focus on what truly matters: your message and your users. Every pixel has a purpose. My approach combines technical precision with artistic intuition.',
-    image: 'https://picsum.photos/seed/profile/800/800'
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [viewState, setViewState] = useState<ViewState>('LANDING');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return document.documentElement.classList.contains('dark') || 
+             localStorage.getItem('theme') === 'dark';
+    }
+    return false;
   });
-  const [aboutForm, setAboutForm] = useState(aboutContent);
-  const [editingProjectIndex, setEditingProjectIndex] = useState<number | null>(null);
 
-  // Fetch Data from Firebase
+  // Dark Mode effect
   useEffect(() => {
-    // 1. Fetch About Content
-    const aboutDocRef = doc(db, 'settings', 'about');
-    const unsubscribeAbout = onSnapshot(aboutDocRef, async (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as any;
-        setAboutContent(data);
-        setAboutForm(data);
-      } else {
-        // Initialize with default content if it doesn't exist
-        const defaultAbout = {
-          badge: 'The Philosophy',
-          title: 'Design that works as good as it looks.',
-          description: 'I strip away the noise to focus on what truly matters: your message and your users. Every pixel has a purpose. My approach combines technical precision with artistic intuition.',
-          image: 'https://picsum.photos/seed/profile/800/800'
-        };
-        await setDoc(aboutDocRef, defaultAbout);
-      }
-    });
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+  }, [isDark]);
 
-    // 2. Fetch Projects
-    const projectsRef = collection(db, 'projects');
-    const q = query(projectsRef, orderBy('order', 'asc'));
-    const unsubscribeProjects = onSnapshot(q, (querySnapshot) => {
-      const fetchedProjects: any[] = [];
-      querySnapshot.forEach((doc) => {
-        fetchedProjects.push({ id: doc.id, ...doc.data() });
+  // Creation State
+  const [task, setTask] = useState('');
+  const [message, setMessage] = useState('');
+  const [password, setPassword] = useState('');
+  const [viewLimit, setViewLimit] = useState(1);
+  const [generatedId, setGeneratedId] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const passwordCriteria = useMemo(() => ({
+    length: password.length >= 8,
+    digit: /\d/.test(password),
+    special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
+  }), [password]);
+
+  const isPasswordValid = passwordCriteria.length && passwordCriteria.digit && passwordCriteria.special;
+
+  const processFile = (file: File) => {
+    if (file.size > 600000) {
+      setError("Terminal Limit Reached: Shard exceeds 600KB secure threshold. Please compress or split your file.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setAttachedFile({
+        name: file.name,
+        type: file.type,
+        data: base64
       });
-      
-      if (fetchedProjects.length === 0 && isLoading) {
-        // Initialize with local projects if DB is empty (first time only)
-        initialProjects.forEach(async (p, index) => {
-          await addDoc(collection(db, 'projects'), { ...p, order: index });
-        });
-      } else {
-        setPortfolioProjects(fetchedProjects);
-      }
-      setIsLoading(false);
-    });
-
-    return () => {
-      unsubscribeAbout();
-      unsubscribeProjects();
     };
-  }, [isLoading]);
-  const [projectForm, setProjectForm] = useState({
-    title: '',
-    category: '',
-    linkUrl: '',
-    description: '',
-    tags: ''
-  });
+    reader.readAsDataURL(file);
+  };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processFile(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) processFile(file);
+  };
+
+  // Retrieval State
+  const [retrieveId, setRetrieveId] = useState('');
+  const [retrieveData, setRetrieveData] = useState<any>(null);
+  const [revealPassword, setRevealPassword] = useState('');
+  const [showRevealPassword, setShowRevealPassword] = useState(false);
+  const [decryptedMessage, setDecryptedMessage] = useState<string | null>(null);
+  const [manualIdInput, setManualIdInput] = useState('');
+
+  // Read URL on mount
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [view]);
-
-  const scrollToSection = (sectionId: string) => {
-    if (view !== 'home') {
-      setView('home');
-      // Wait for the view to switch before searching for the element
-      setTimeout(() => {
-        const element = document.getElementById(sectionId);
-        if (element) {
-          element.scrollIntoView({ behavior: 'smooth' });
-        }
-      }, 100);
-    } else {
-      const element = document.getElementById(sectionId);
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth' });
+    const checkUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const hashPart = window.location.hash.includes('?') 
+        ? window.location.hash.split('?')[1] 
+        : window.location.hash.substring(1);
+      const hashParams = new URLSearchParams(hashPart);
+      
+      const id = params.get('s') || hashParams.get('s');
+      
+      if (id) {
+        // If we found it in search params, move it to hash for a cleaner URL and better routing
+        window.history.replaceState(null, '', `/#s=${id}`);
+        handleLoadSecret(id);
       }
-    }
-  };
-
-  const handleProjectClick = (project: any) => {
-    if (project.linkUrl) {
-      window.open(project.linkUrl, '_blank');
-    }
-  };
-
-  const handleLogoClick = () => {
-    const newCount = logoTapCount + 1;
-    setLogoTapCount(newCount);
-    
-    if (newCount === 3) {
-      setShowPasswordModal(true);
-      setLogoTapCount(0);
-    }
-
-    // Reset count after 1 second of inactivity
-    setTimeout(() => {
-      setLogoTapCount(0);
-    }, 1000);
-  };
-
-  const handlePasswordSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (passwordInput === 'idowubbb123') {
-      setIsAdmin(true);
-      setShowPasswordModal(false);
-      setPasswordInput('');
-      setAdminError('');
-    } else {
-      setAdminError('Incorrect password');
-    }
-  };
-
-  const handleAddProject = () => {
-    setEditingProjectIndex(null);
-    setProjectForm({
-      title: '',
-      category: '',
-      linkUrl: '',
-      description: '',
-      tags: ''
-    });
-    setShowProjectModal(true);
-  };
-
-  const handleEditProject = (e: React.MouseEvent, index: number) => {
-    e.stopPropagation();
-    const project = portfolioProjects[index];
-    setEditingProjectIndex(index);
-    setProjectForm({
-      title: project.title,
-      category: project.category,
-      linkUrl: project.linkUrl || '',
-      description: project.description,
-      tags: project.tags.join(', ')
-    });
-    setShowProjectModal(true);
-  };
-
-  const handleDeleteProject = async (e: React.MouseEvent, index: number) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to delete this project?')) {
-      const project = portfolioProjects[index];
-      if (project.id) {
-        await deleteDoc(doc(db, 'projects', project.id));
-      }
-    }
-  };
-
-  const handleProjectSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const tagsArray = projectForm.tags.split(',').map(t => t.trim()).filter(t => t !== '');
-    const projectData = {
-      ...projectForm,
-      tags: tagsArray,
-      order: editingProjectIndex !== null ? portfolioProjects[editingProjectIndex].order : Date.now()
     };
 
-    if (editingProjectIndex !== null) {
-      const project = portfolioProjects[editingProjectIndex];
-      await setDoc(doc(db, 'projects', project.id), projectData);
-    } else {
-      await addDoc(collection(db, 'projects'), projectData);
+    checkUrl();
+    window.addEventListener('hashchange', checkUrl);
+    return () => window.removeEventListener('hashchange', checkUrl);
+  }, []);
+
+  const handleLoadSecret = async (id: string) => {
+    setViewState('LOADING'); // Immediate feedback
+    setLoading(true);
+    setRetrieveId(id);
+    setError(null);
+    setManualIdInput('');
+    
+    try {
+      const docRef = doc(db, 'secrets', id.trim());
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.viewCount >= data.viewLimit) {
+          setViewState('EXPIRED');
+        } else {
+          setRetrieveData(data);
+          setViewState('RETRIEVE');
+        }
+      } else {
+        setViewState('EXPIRED'); 
+      }
+    } catch (err: any) {
+      if (err.code === 'permission-denied') {
+        setViewState('EXPIRED');
+      } else {
+        setError(`Uplink Error: Protocol handshake failed. Re-verify your sequence ID or network status.`);
+        setViewState('DISCOVER');
+      }
+    } finally {
+      setLoading(false);
     }
-    setShowProjectModal(false);
   };
 
-  const handleAboutSubmit = async (e: React.FormEvent) => {
+  const handleCreateSecret = async (e: React.FormEvent) => {
     e.preventDefault();
-    await setDoc(doc(db, 'settings', 'about'), aboutForm);
-    setShowAboutModal(false);
-  };
+    if (!message || !password) return;
 
-  const handleFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setSubmitStatus('idle');
+    if (!isPasswordValid) {
+      setError("Security Violation: Credentials must satisfy all complexity filters (Green Indicators) before ignition.");
+      return;
+    }
 
-    const formData = new FormData(e.currentTarget);
-    const accessKey = "cc550739-6cf6-4392-80f2-bdd06c47bf8a";
-    formData.append("access_key", accessKey);
+    setLoading(true);
+    setError(null);
 
     try {
-      const response = await fetch("https://api.web3forms.com/submit", {
-        method: "POST",
-        body: formData
+      const payload = JSON.stringify({
+        text: message,
+        file: attachedFile
+      });
+      const { encryptedData, iv, salt } = await encryptMessage(payload, password);
+      const id = nanoid(8).toUpperCase(); 
+      
+      const secretData = {
+        task: task.trim(),
+        encryptedData,
+        iv,
+        salt,
+        viewLimit: Number(viewLimit),
+        viewCount: 0,
+        createdAt: serverTimestamp(),
+      };
+
+      await setDoc(doc(db, 'secrets', id), secretData);
+      
+      setGeneratedId(id);
+      setViewState('SUCCESS');
+    } catch (err) {
+      setError("Encryption Failure: Critical handshake error during vault transmission. Refresh and try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDecrypt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!revealPassword || !retrieveData) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const decrypted = await decryptMessage(
+        retrieveData.encryptedData,
+        retrieveData.iv,
+        retrieveData.salt,
+        revealPassword
+      );
+
+      const docRef = doc(db, 'secrets', retrieveId);
+      await updateDoc(docRef, {
+        viewCount: increment(1)
       });
 
-      const data = await response.json();
-
-      if (data.success) {
-        setSubmitStatus('success');
-        (e.target as HTMLFormElement).reset();
-      } else {
-        setSubmitStatus('error');
+      try {
+        const parsed = JSON.parse(decrypted);
+        setDecryptedMessage(parsed.text);
+        if (parsed.file) {
+          setRetrieveData((prev: any) => ({ ...prev, attachedFile: parsed.file }));
+        }
+      } catch (e) {
+        // Fallback for old simple-string messages
+        setDecryptedMessage(decrypted);
       }
-    } catch (error) {
-      console.error("Form submission error:", error);
-      setSubmitStatus('error');
+      setViewState('REVEALED');
+    } catch (err: any) {
+      setError("Decryption Refused: Access key mismatch. The protocol remains locked to protect data integrity.");
+      setRevealPassword('');
     } finally {
-      setIsSubmitting(false);
-      setTimeout(() => setSubmitStatus('idle'), 5000);
+      setLoading(false);
     }
+  };
+
+  const copyToClipboard = async (type: 'link' | 'invite' | 'share' | 'id' = 'link') => {
+    const currentOrigin = window.location.origin;
+    const cleanBase = currentOrigin.replace(/\/$/, '');
+    const url = `${cleanBase}/#s=${generatedId}`;
+    
+    let text = '';
+    if (type === 'id') {
+      text = generatedId;
+    } else if (type === 'link') {
+      text = url;
+    } else {
+      text = `🔐 IDB Secret Message\n\nID: ${generatedId}\nLink: ${url}\n\n(View limit: ${viewLimit} times)`;
+    }
+    
+    if (type === 'share' && navigator.share) {
+      try {
+        await navigator.share({
+          title: 'IDB Secret Message',
+          text: `I've sent you a secret message. ID: ${generatedId}`,
+          url: url
+        });
+      } catch (err) {
+        // Fallback to clipboard if share is cancelled or fails
+        navigator.clipboard.writeText(url);
+      }
+    } else {
+      navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const reset = () => {
+    window.history.pushState({}, '', window.location.pathname);
+    setViewState('LANDING');
+    setTask('');
+    setMessage('');
+    setPassword('');
+    setViewLimit(1);
+    setGeneratedId('');
+    setRetrieveId('');
+    setManualIdInput('');
+    setRetrieveData(null);
+    setRevealPassword('');
+    setDecryptedMessage(null);
+    setAttachedFile(null);
+    setError(null);
   };
 
   const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1
-      }
-    }
+    hidden: { opacity: 0, x: -20 },
+    visible: { opacity: 1, x: 0, transition: { duration: 0.4, ease: "easeOut" } },
+    exit: { opacity: 0, x: 20, transition: { duration: 0.2 } }
   };
 
-  const itemVariants = {
-    hidden: { y: 20, opacity: 0 },
-    visible: {
-      y: 0,
-      opacity: 1,
-      transition: {
-        duration: 0.5,
-        ease: "easeOut"
-      }
-    }
-  };
+  const NavItem = ({ label, target, num }: { label: string, target: ViewState, num: string }) => (
+    <button 
+      onClick={() => setViewState(target)}
+      className={`group flex items-center gap-4 py-3 border-b border-foreground/5 w-full text-left transition-all ${viewState === target ? 'opacity-100' : 'opacity-30 hover:opacity-100'}`}
+    >
+      <span className="text-[10px] font-mono font-bold">{num}</span>
+      <span className="text-sm font-black tracking-tighter uppercase">{label}</span>
+      <ChevronRight className={`w-3 h-3 ml-auto transition-transform ${viewState === target ? 'translate-x-0' : '-translate-x-2 group-hover:translate-x-0'}`} />
+    </button>
+  );
 
   return (
-    <div className="min-h-screen font-sans selection:bg-white selection:text-black overflow-x-hidden bg-black text-white">
-      <div className="max-w-[1200px] mx-auto px-6 md:px-12 py-8 flex flex-col gap-24">
-        {/* Navigation */}
-        <nav className="w-full z-50">
-          <div className="flex justify-between items-center h-16">
-            <motion.div 
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              onClick={handleLogoClick}
-              className="text-2xl font-heading font-extrabold tracking-tighter flex items-center gap-2 cursor-pointer select-none text-white"
-            >
-              <div className="w-2.5 h-2.5 bg-primary rounded-full" />
-              ISAAC
-            </motion.div>
-
-            <div className="hidden md:flex items-center gap-10">
-              {['Work', 'About', 'Services', 'Contact'].map((item) => (
-                <button 
-                  key={item} 
-                  onClick={() => {
-                    if (item === 'Work') setView('portfolio');
-                    else scrollToSection(item.toLowerCase());
-                  }}
-                  className={`text-[14px] font-medium transition-colors hover:text-primary ${
-                    (item === 'Work' && view === 'portfolio') || (item !== 'Work' && view === 'home') 
-                    ? 'text-white' 
-                    : 'text-muted-foreground'
-                  }`}
-                >
-                  {item}
-                </button>
-              ))}
-              <Button 
-                onClick={() => setView('portfolio')}
-                className="rounded-full px-6 h-10 text-[13px] font-bold"
-              >
-                Get Started
-              </Button>
-            </div>
-
-            <div className="md:hidden">
-              <Sheet>
-                <SheetTrigger render={<Button variant="ghost" size="icon" />}>
-                  <Menu className="w-6 h-6" />
-                </SheetTrigger>
-                <SheetContent className="bg-[#0A0A0A] border-white/10">
-                  <div className="flex flex-col gap-6 mt-12">
-                    {['Work', 'About', 'Services', 'Contact'].map((item) => (
-                      <button 
-                        key={item} 
-                        onClick={() => {
-                          if (item === 'Work') setView('portfolio');
-                          else scrollToSection(item.toLowerCase());
-                        }}
-                        className="text-2xl font-heading font-semibold text-left text-white hover:text-white/60 transition-colors"
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                </SheetContent>
-              </Sheet>
-            </div>
+    <div className={`min-h-screen bg-background text-foreground font-sans flex flex-col md:flex-row overflow-x-hidden ${isDark ? 'dark' : ''}`}>
+      {/* Sidebar Navigation */}
+      <aside className="w-full md:w-64 border-r border-border p-8 flex flex-col gap-12 z-20 bg-background transition-colors duration-300">
+        <div className="flex justify-between items-start">
+          <div className="cursor-pointer" onClick={reset}>
+            <h1 className="text-2xl font-black tracking-tighter leading-tight italic">IDB.</h1>
+            <p className="text-[9px] font-bold uppercase tracking-widest opacity-30 mt-1">Secret Protocol 5.0</p>
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsDark(!isDark)}
+            className="rounded-none hover:bg-neon hover:text-black transition-all"
+          >
+            {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </Button>
+        </div>
+
+        <nav className="flex-1 space-y-2">
+           <NavItem num="01" label="Protocol Home" target="LANDING" />
+           <NavItem num="02" label="New Message" target="CREATE" />
+           <NavItem num="03" label="See My Message" target="DISCOVER" />
+           <NavItem num="04" label="How it works" target="HOW_IT_WORKS" />
+           <NavItem num="05" label="Security" target="SECURITY" />
+           <NavItem num="06" label="Info" target="ABOUT" />
+           <NavItem num="07" label="Contact" target="CONTACT" />
         </nav>
 
-        <AnimatePresence mode="wait">
-          {view === 'home' ? (
-            <motion.div
-              key="home"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.4 }}
-              className="flex flex-col gap-24"
-            >
-              {/* Hero Section */}
-              <section className="min-h-[70vh] flex flex-col justify-center items-center text-center">
-                <motion.div
-                  initial={{ opacity: 0, y: 30 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.8, ease: "easeOut" }}
-                  className="max-w-4xl"
-                >
-                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 text-white/60 text-[10px] font-bold mb-10 border border-white/10 uppercase tracking-widest">
-                    <Zap className="w-3 h-3 text-white" />
-                    <span>Website Specialist & UI Designer</span>
-                  </div>
-                  <h1 className="text-6xl md:text-8xl font-heading font-bold leading-[0.9] tracking-[-0.05em] mb-10">
-                    Building the <span className="text-white/40 italic">future</span> of the web.
-                  </h1>
-                  <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed mb-12">
-                    Minimalist aesthetics meets high-performance engineering. I create digital experiences that command attention.
-                  </p>
-                  <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                    <Button 
-                      onClick={() => setView('portfolio')}
-                      className="rounded-full px-10 h-14 text-[14px] font-bold uppercase tracking-widest bg-white text-black hover:bg-white/90 w-full sm:w-auto"
-                    >
-                      View Projects
-                    </Button>
-                    <Button 
-                      variant="outline"
-                      onClick={() => document.getElementById('contact')?.scrollIntoView({ behavior: 'smooth' })}
-                      className="rounded-full px-10 h-14 text-[14px] font-bold uppercase tracking-widest border-white/10 hover:bg-white/5 w-full sm:w-auto"
-                    >
-                      Get in Touch
-                    </Button>
-                  </div>
-                </motion.div>
-              </section>
+        <div className="p-4 bg-foreground text-background flex items-center justify-between">
+           <span className="text-[10px] font-bold uppercase tracking-widest">Status</span>
+           <div className="w-2 h-2 bg-neon rounded-full animate-pulse shadow-[0_0_8px_#00FF00]" />
+        </div>
+      </aside>
 
-              {/* Bento Grid Portfolio Preview */}
-              <section id="work" className="scroll-mt-24">
-                <div className="flex justify-between items-end mb-12">
-                  <div className="flex flex-col gap-2">
-                    <h2 className="text-4xl font-heading font-bold tracking-tighter">Selected Work</h2>
-                    <p className="text-muted-foreground">A glimpse into my latest digital creations.</p>
-                  </div>
-                  <button 
-                    onClick={() => setView('portfolio')}
-                    className="text-[13px] font-bold uppercase tracking-widest text-white hover:opacity-70 transition-opacity"
-                  >
-                    View All Projects
-                  </button>
-                </div>
-                <motion.div 
-                  variants={containerVariants}
-                  initial="hidden"
-                  whileInView="visible"
-                  viewport={{ once: true }}
-                  className="flex flex-col border-t border-white/10"
-                >
-                  {portfolioProjects.slice(0, 5).map((project, index) => (
-                    <motion.div
-                      key={index}
-                      variants={itemVariants}
-                      onClick={() => handleProjectClick(project)}
-                      className="group flex flex-col md:flex-row md:items-center justify-between py-8 px-4 md:px-8 border-b border-white/10 hover:bg-white/[0.02] transition-colors cursor-pointer relative"
-                    >
-                      <div className="flex flex-col gap-1">
-                        <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold mb-1">
-                          {project.category}
-                        </div>
-                        <h3 className="text-2xl md:text-3xl font-bold tracking-tight group-hover:pl-2 transition-all duration-300 flex items-center gap-4">
-                          {project.title}
-                          <ArrowRight className="w-5 h-5 opacity-0 group-hover:opacity-100 -translate-x-4 group-hover:translate-x-0 transition-all duration-300 text-white/40" />
-                        </h3>
-                      </div>
-                      <div className="flex flex-wrap gap-2 mt-4 md:mt-0 opacity-40 group-hover:opacity-100 transition-opacity">
-                        {project.tags.slice(0, 3).map(tag => (
-                          <span key={tag} className="text-[10px] font-medium uppercase tracking-[0.1em]">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </motion.div>
-                  ))}
-                </motion.div>
-              </section>
+      {/* Main Content Area */}
+      <main className="flex-1 relative min-h-screen flex flex-col">
+        {/* Background Marquee / Graphic */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0 opacity-[0.03]">
+           <h2 className="text-[30vw] font-display uppercase leading-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap">
+             {viewState}
+           </h2>
+        </div>
 
-              {/* Services Section */}
-              <section id="services" className="scroll-mt-24">
-                <div className="flex flex-col items-center text-center mb-16">
-                  <h2 className="text-4xl font-heading font-bold tracking-tighter mb-4">Expertise</h2>
-                  <p className="text-muted-foreground max-w-lg">
-                    Comprehensive solutions for modern digital challenges.
-                  </p>
-                </div>
-                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {services.map((service, index) => (
-                    <motion.div
-                      key={index}
-                      initial={{ opacity: 0, y: 20 }}
-                      whileInView={{ opacity: 1, y: 0 }}
-                      transition={{ delay: index * 0.1 }}
-                      viewport={{ once: true }}
-                      className="readdy-card p-8 group"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-white mb-6 group-hover:scale-110 transition-transform border border-white/10">
-                        {service.icon}
-                      </div>
-                      <h3 className="text-xl font-bold mb-3 tracking-tight">{service.title}</h3>
-                      <p className="text-sm text-muted-foreground leading-relaxed">
-                        {service.description}
-                      </p>
-                    </motion.div>
-                  ))}
-                </div>
-              </section>
-
-              {/* About Section */}
-              <section id="about" className="scroll-mt-24 relative overflow-hidden rounded-[40px] bg-white/5 border border-white/10 p-12 md:p-24 group/about">
-                {isAdmin && (
-                  <button 
-                    onClick={() => {
-                      setAboutForm(aboutContent);
-                      setShowAboutModal(true);
-                    }}
-                    className="absolute top-8 right-8 z-30 w-12 h-12 rounded-full bg-white text-black flex items-center justify-center shadow-xl opacity-0 group-hover/about:opacity-100 transition-all hover:scale-110"
-                  >
-                    <Edit2 className="w-5 h-5" />
-                  </button>
-                )}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center relative z-10">
-                  <div className="flex flex-col gap-8 max-w-2xl">
-                    <Badge variant="outline" className="rounded-full px-4 py-1 border-white/10 text-white/60 uppercase tracking-widest text-[10px] font-bold w-fit">
-                      {aboutContent.badge}
-                    </Badge>
-                    <h2 className="text-4xl md:text-5xl lg:text-6xl font-heading font-bold tracking-tighter leading-[1.05]">
-                      {aboutContent.title.split(' ').map((word, i) => (
-                        word.toLowerCase() === 'works' || word.toLowerCase() === 'future' || word.toLowerCase() === 'extraordinary' ? 
-                        <span key={i} className="text-white/40 italic mr-2">{word}</span> : <span key={i} className="mr-2">{word}</span>
-                      ))}
-                    </h2>
-                    <p className="text-lg text-muted-foreground leading-relaxed max-w-xl">
-                      {aboutContent.description}
-                    </p>
-                    <div className="flex gap-4">
-                      <Button 
-                        onClick={() => document.getElementById('work')?.scrollIntoView({ behavior: 'smooth' })}
-                        className="rounded-full bg-white text-black hover:bg-white/90 px-8 h-12 font-bold uppercase tracking-widest text-[12px]"
-                      >
-                        Our Story
-                      </Button>
-                    </div>
-                  </div>
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    whileInView={{ opacity: 1, scale: 1 }}
-                    viewport={{ once: true }}
-                    className="flex justify-center lg:justify-end"
-                  >
-                    <div className="relative w-full max-w-[440px] aspect-square rounded-[40px] overflow-hidden border border-white/10 group shadow-2xl">
-                      <img 
-                        src={aboutContent.image} 
-                        alt="Profile" 
-                        className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700"
-                        referrerPolicy="no-referrer"
-                      />
-                    </div>
-                  </motion.div>
-                </div>
-              </section>
-
-              {/* Contact Section */}
-              <section id="contact" className="scroll-mt-24 mb-12">
-                <div className="grid md:grid-cols-2 gap-16 items-start">
-                  <div className="flex flex-col gap-8">
-                    <Badge variant="outline" className="rounded-full px-4 py-1 border-white/10 text-white/60 uppercase tracking-widest text-[10px] font-bold w-fit">
-                      Get in Touch
-                    </Badge>
-                    <h2 className="text-5xl md:text-6xl font-heading font-bold tracking-tighter leading-[1.05]">Let's build something <span className="text-white/40 italic">extraordinary</span>.</h2>
-                    <p className="text-muted-foreground text-lg leading-relaxed">
-                      Have a project in mind? I'd love to hear about it. Let's collaborate to create something that stands out in the digital landscape.
-                    </p>
-                    
-                    <div className="grid gap-4 mt-4">
-                      <div className="flex items-center gap-5 p-6 rounded-[32px] border border-white/10 bg-white/5 group hover:bg-white/10 transition-colors">
-                        <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-white border border-white/10">
-                          <Mail className="w-5 h-5" />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">Email</span>
-                          <div className="text-lg font-bold">Isaacmason928@gmail.com</div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-5 p-6 rounded-[32px] border border-white/10 bg-white/5 group hover:bg-white/10 transition-colors">
-                        <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-white border border-white/10">
-                          <Phone className="w-5 h-5" />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">Phone</span>
-                          <div className="text-lg font-bold">08020805409</div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-5 p-6 rounded-[32px] border border-white/10 bg-white/5 group hover:bg-white/10 transition-colors">
-                        <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-white border border-white/10">
-                          <MapPin className="w-5 h-5" />
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">Location</span>
-                          <div className="text-lg font-bold">Lagos, Nigeria</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <form onSubmit={handleFormSubmit} className="space-y-6 p-10 rounded-[40px] bg-white/5 border border-white/10 relative backdrop-blur-xl">
-                    <div className="space-y-4">
-                      <div className="grid sm:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-[10px] uppercase tracking-[0.2em] font-bold text-white/40 ml-1">Name</label>
-                          <Input name="name" required placeholder="Your Name" className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20 focus:border-white/40 transition-colors" />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[10px] uppercase tracking-[0.2em] font-bold text-white/40 ml-1">Email</label>
-                          <Input name="email" type="email" required placeholder="Your Email" className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20 focus:border-white/40 transition-colors" />
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase tracking-[0.2em] font-bold text-white/40 ml-1">Message</label>
-                        <Textarea name="message" required placeholder="How can I help you?" className="rounded-2xl min-h-[160px] bg-white/5 border-white/10 p-6 text-white placeholder:text-white/20 focus:border-white/40 transition-colors" />
-                      </div>
-                    </div>
-                    <Button 
-                      type="submit" 
-                      disabled={isSubmitting}
-                      className="w-full h-14 rounded-2xl text-[14px] font-bold uppercase tracking-widest bg-white text-black hover:bg-white/90 transition-all"
-                    >
-                      {isSubmitting ? "Sending..." : "Send Message"}
-                    </Button>
-
-                    <AnimatePresence>
-                      {submitStatus === 'success' && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0 }}
-                          className="absolute inset-0 bg-black/90 backdrop-blur-md rounded-[40px] flex flex-center justify-center items-center p-8 text-center border border-white/10"
-                        >
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center text-white border border-white/10">
-                              <Zap className="w-6 h-6" />
-                            </div>
-                            <h3 className="text-2xl font-bold">Message Sent!</h3>
-                            <p className="text-sm text-muted-foreground">Thank you for reaching out. I'll get back to you shortly.</p>
-                          </div>
-                        </motion.div>
-                      )}
-                      {submitStatus === 'error' && (
-                        <motion.p 
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          className="text-red-500 text-[10px] font-bold text-center mt-2 uppercase tracking-widest"
-                        >
-                          Something went wrong. Please try again.
-                        </motion.p>
-                      )}
-                    </AnimatePresence>
-                  </form>
-                </div>
-              </section>
-            </motion.div>
-          ) : view === 'portfolio' ? (
-            <motion.div
-              key="portfolio"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.4 }}
-              className="flex flex-col gap-12"
-            >
-              <div className="flex flex-col md:flex-row md:items-end justify-between gap-8">
-                <div className="flex flex-col gap-4">
-                  <button 
-                    onClick={() => setView('home')}
-                    className="flex items-center gap-2 text-[13px] font-bold uppercase tracking-widest text-white/40 hover:text-white transition-colors group w-fit"
-                  >
-                    <ChevronRight className="w-4 h-4 rotate-180 transition-transform group-hover:-translate-x-1" /> Back to Home
-                  </button>
-                  <h1 className="text-6xl md:text-7xl font-heading font-bold tracking-tighter">Portfolio</h1>
-                  <p className="text-muted-foreground max-w-xl text-lg">
-                    A comprehensive collection of digital experiences, from high-end e-commerce to real-time SaaS dashboards.
-                  </p>
-                </div>
-                {isAdmin && (
-                  <Button 
-                    onClick={handleAddProject}
-                    className="rounded-full px-8 h-12 text-[13px] font-bold uppercase tracking-widest flex items-center gap-2 bg-white text-black hover:bg-white/90"
-                  >
-                    <Plus className="w-4 h-4" /> Add Project
-                  </Button>
-                )}
-              </div>
-
-              {/* Full List */}
-              <motion.div 
-                layout
-                className="flex flex-col border-t border-white/10"
-              >
-                <AnimatePresence mode="popLayout">
-                  {portfolioProjects.map((project, index) => (
-                    <motion.div
-                      key={project.id || project.title + index}
-                      layout
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.3 }}
-                      onClick={() => handleProjectClick(project)}
-                      className="group flex flex-col md:flex-row md:items-center justify-between py-10 px-4 md:px-8 border-b border-white/10 hover:bg-white/[0.02] transition-colors cursor-pointer relative"
-                    >
-                      <div className="flex flex-col gap-2 max-w-2xl">
-                        <div className="flex items-center gap-3">
-                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">
-                            {project.category}
-                          </div>
-                          <div className="w-1 h-1 rounded-full bg-white/20" />
-                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">
-                            {new URL(project.linkUrl || 'https://example.com').hostname}
-                          </div>
-                        </div>
-                        <h3 className="text-3xl md:text-5xl font-bold tracking-tighter group-hover:pl-4 transition-all duration-300 flex items-center gap-6">
-                          {project.title}
-                          <ArrowRight className="w-6 h-6 md:w-8 md:h-8 opacity-0 group-hover:opacity-100 -translate-x-8 group-hover:translate-x-0 transition-all duration-300 text-white/20" />
-                        </h3>
-                        <p className="text-muted-foreground line-clamp-2 text-sm mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                          {project.description}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-8 mt-6 md:mt-0">
-                        <div className="hidden lg:flex flex-wrap gap-4 opacity-40 group-hover:opacity-100 transition-opacity">
-                          {project.tags.map(tag => (
-                            <span key={tag} className="text-[10px] font-medium uppercase tracking-[0.2em] border border-white/10 rounded-full px-4 py-1.5">
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                        
-                        {isAdmin && (
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={(e) => handleEditProject(e, index)}
-                              className="w-12 h-12 rounded-full border border-white/10 bg-white/5 flex items-center justify-center text-white hover:bg-white hover:text-black transition-all"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={(e) => handleDeleteProject(e, index)}
-                              className="w-12 h-12 rounded-full border border-white/10 bg-red-500/10 flex items-center justify-center text-red-500 hover:bg-red-500 hover:text-white transition-all"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
+        <div className="relative z-10 flex-1 flex flex-col px-8 md:px-16 py-12 md:py-24 max-w-4xl">
+          {error && (
+            <div className="mb-8 border-2 border-red-500 bg-red-500/10 p-4 text-[10px] font-black uppercase text-red-500 flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          <AnimatePresence mode="wait">
+            {viewState === 'LOADING' && (
+              <motion.div key="loading" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="flex flex-col gap-6 py-20">
+                <div className="text-[60px] md:text-[120px] font-display leading-[0.8] animate-pulse">CONNECTING...</div>
+                <p className="font-mono text-sm opacity-40">Decrypting satellite uplink...</p>
               </motion.div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-
-        {/* Contact Strip / Footer */}
-        <footer className="pt-12 border-t border-white/10 flex flex-col md:flex-row justify-between items-center gap-8 mb-12">
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-            <span className="text-[14px] font-medium text-muted-foreground uppercase tracking-widest">Available for new projects — Q3 2024</span>
-          </div>
-          
-          <div className="flex items-center gap-10">
-            <a 
-              href="https://www.instagram.com/ilog.icai/"
-              target="_blank"
-              rel="noreferrer"
-              className="text-[12px] font-bold uppercase tracking-widest cursor-pointer hover:text-white transition-colors text-white/40 flex items-center gap-2"
-            >
-              <Instagram className="w-4 h-4" /> Instagram
-            </a>
-            {isAdmin && (
-              <Button 
-                variant="ghost"
-                onClick={() => setIsAdmin(false)}
-                className="text-red-500 hover:text-red-600 hover:bg-red-500/10 rounded-full px-6 h-10 font-bold flex items-center gap-2 uppercase tracking-widest text-[10px]"
-              >
-                <Lock className="w-3 h-3" /> Logout
-              </Button>
             )}
-          </div>
-        </footer>
 
-        {/* Password Modal */}
-        <AnimatePresence>
-          {showPasswordModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowPasswordModal(false)}
-                className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative bg-[#0A0A0A] rounded-[40px] p-12 w-full max-w-md shadow-2xl border border-white/10"
-              >
-                <div className="flex flex-col items-center text-center gap-6">
-                  <div className="w-16 h-16 rounded-[24px] bg-white/5 flex items-center justify-center text-white border border-white/10">
-                    <Lock className="w-8 h-8" />
+            {viewState === 'LANDING' && (
+              <motion.div key="landing" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                <div className="relative overflow-hidden h-12 flex items-center border-y-2 border-foreground -mx-8 md:-mx-16 bg-neon mb-12">
+                  <div className="flex whitespace-nowrap animate-marquee">
+                    {[1,2,3,4,5,6].map(i => (
+                      <span key={i} className="text-xl font-display uppercase tracking-[0.2em] px-8">
+                        IDB SECURE LINK SYSTEM // PROTOCOL ACTIVATED // ZERO KNOWLEDGE ARCHITECTURE // 
+                      </span>
+                    ))}
                   </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="text-[80px] md:text-[150px] font-display leading-[0.8] tracking-tighter uppercase relative text-foreground">
+                    Wildly <br /> 
+                    <span className="text-neon italic drop-shadow-[0_0_20px_rgba(0,255,0,0.4)]">Secure.</span>
+                  </div>
+                  <p className="max-w-md text-lg md:text-xl font-medium leading-relaxed opacity-60">
+                    The world's most dynamic encryption platform. Create, share, and destroy messages with a single tap.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-8">
+                  <button 
+                    onClick={() => setViewState('CREATE')}
+                    className="h-24 border-4 border-foreground p-6 flex flex-col justify-between hover:bg-foreground hover:text-background transition-all group relative overflow-hidden"
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-widest opacity-50 group-hover:opacity-100 italic z-10">Phase 01</span>
+                    <span className="text-xl font-black uppercase tracking-tighter z-10 text-left">New Secret Message</span>
+                    <div className="absolute right-[-10%] bottom-[-20%] text-[80px] font-display text-foreground/5 group-hover:text-background/10 transition-all">01</div>
+                  </button>
+                  <button 
+                   onClick={() => setViewState('DISCOVER')}
+                   className="h-24 border-4 border-foreground p-6 flex flex-col justify-between hover:bg-neon transition-all hover:text-black group relative overflow-hidden"
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-widest opacity-50 group-hover:opacity-100 italic z-10">Phase 02</span>
+                    <span className="text-xl font-black uppercase tracking-tighter flex items-center justify-between z-10">
+                       See My Message <ChevronRight />
+                    </span>
+                    <div className="absolute right-[-10%] bottom-[-20%] text-[80px] font-display text-foreground/5 group-hover:text-black/10 transition-all">02</div>
+                  </button>
+                </div>
+
+                <div className="pt-12 border-t border-foreground/10 grid grid-cols-3 gap-8">
+                   <div className="space-y-2">
+                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Uptime</span>
+                     <p className="text-2xl font-display uppercase">99.9%</p>
+                   </div>
+                   <div className="space-y-2">
+                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Encrypted</span>
+                     <p className="text-2xl font-display uppercase">AES-256</p>
+                   </div>
+                   <div className="space-y-2">
+                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Protocol</span>
+                     <p className="text-2xl font-display uppercase">IDB-5</p>
+                   </div>
+                </div>
+              </motion.div>
+            )}
+
+            {viewState === 'CREATE' && (
+              <motion.div key="create" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                 <div className="space-y-2">
+                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Post it.</h2>
+                    <p className="font-medium opacity-50">Encryption is client-side. We never see your password.</p>
+                 </div>
+
+                 <form onSubmit={handleCreateSecret} className="space-y-4">
+                    <Input 
+                      value={task}
+                      onChange={(e) => setTask(e.target.value)}
+                      placeholder="ASSOCIATED TASK / TITLE (OPTIONAL)"
+                      className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-8 uppercase tracking-widest placeholder:opacity-20 transition-colors"
+                    />
+
+                    <Textarea 
+                      value={message}
+                      onChange={(e) => setMessage(e.target.value)}
+                      placeholder="Write your secret..."
+                      className="min-h-[220px] border-4 border-foreground bg-background rounded-none text-xl p-8 focus-visible:ring-0 shadow-[12px_12px_0px_0px_var(--color-neon)]/50 focus:shadow-none transition-all"
+                      required
+                    />
+
+                    {/* File Attachment Section */}
+                    <div 
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      className={`border-4 border-foreground border-dashed p-4 flex flex-col gap-4 transition-all ${isDragOver ? 'bg-neon/20 scale-[1.02]' : 'bg-background/50'}`}
+                    >
+                       <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-black uppercase italic opacity-40">Secure Attachment (Max 600KB)</span>
+                          {attachedFile && (
+                            <button 
+                              type="button" 
+                              onClick={() => {
+                                setAttachedFile(null);
+                                if (fileInputRef.current) fileInputRef.current.value = '';
+                              }}
+                              className="text-red-500 hover:text-red-600 transition-colors"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                       </div>
+                       
+                       {!attachedFile ? (
+                         <div className="relative">
+                            <input 
+                              ref={fileInputRef}
+                              type="file" 
+                              onChange={handleFileChange}
+                              className="hidden"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => fileInputRef.current?.click()}
+                              className="w-full h-16 flex items-center justify-center gap-3 border-2 border-foreground hover:bg-foreground hover:text-background transition-all group"
+                            >
+                               <Upload className="w-5 h-5 group-hover:animate-bounce" />
+                               <span className="font-black uppercase text-xs">Browse Device Shards</span>
+                            </button>
+                            <p className="text-[8px] text-center mt-2 font-black uppercase opacity-20">or drop protocol shard here</p>
+                         </div>
+                       ) : (
+                         <div className="h-20 flex items-center gap-4 px-4 bg-foreground text-background border-l-4 border-neon">
+                            {attachedFile.type.startsWith('image/') ? (
+                              <div className="w-12 h-12 border border-neon/30 overflow-hidden shrink-0 bg-black/20">
+                                <img 
+                                  src={attachedFile.data} 
+                                  alt="Preview" 
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                            ) : (
+                              <FileText className="w-8 h-8 text-neon shrink-0" />
+                            )}
+                            <div className="flex flex-col min-w-0 flex-1">
+                               <div className="flex items-center gap-2">
+                                  <span className="text-xs font-black uppercase truncate">{attachedFile.name}</span>
+                                  <Badge className="bg-neon text-black text-[8px] h-4 rounded-none border-none">{(attachedFile.data.length * 0.75 / 1024).toFixed(1)}KB</Badge>
+                               </div>
+                               <span className="text-[9px] opacity-60 uppercase font-mono">{attachedFile.type || 'PROTOCOL/SHARD'}</span>
+                            </div>
+                         </div>
+                       )}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="relative">
+                        <Input 
+                          type={showCreatePassword ? "text" : "password"}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="ACCESS PASSWORD"
+                          className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 pr-12 w-full transition-colors"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowCreatePassword(!showCreatePassword)}
+                          className={`absolute right-4 top-1/2 -translate-y-1/2 transition-all p-1 hover:bg-foreground/5 ${showCreatePassword ? 'text-neon drop-shadow-[0_0_8px_rgba(0,255,0,0.6)]' : 'text-foreground/40 hover:text-foreground'}`}
+                        >
+                          {showCreatePassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        </button>
+                      </div>
+
+                      <div className="md:col-span-2 flex flex-wrap gap-4 pt-2">
+                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.length ? 'text-neon' : 'opacity-30'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.length ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
+                          8+ Characters
+                        </div>
+                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.digit ? 'text-neon' : 'opacity-30'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.digit ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
+                          1+ Number
+                        </div>
+                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.special ? 'text-neon' : 'opacity-30'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.special ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
+                          1+ Special
+                        </div>
+                      </div>
+
+                      <Input 
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={viewLimit}
+                        onChange={(e) => setViewLimit(parseInt(e.target.value))}
+                        placeholder="VIEW LIMIT"
+                        className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 transition-colors"
+                      />
+                    </div>
+                    <Button type="submit" disabled={loading || !isPasswordValid} className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all disabled:opacity-20 disabled:cursor-not-allowed">
+                       {loading ? <RefreshCcw className="animate-spin" /> : 'Lock Session'}
+                    </Button>
+                 </form>
+              </motion.div>
+            )}
+
+            {viewState === 'DISCOVER' && (
+              <motion.div key="discover" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                 <div className="space-y-2">
+                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">See My <br /> Message.</h2>
+                    <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">Retrieve a message from the global vault.</p>
+                 </div>
+
+                 <div className="space-y-6">
+                    <div className="relative group">
+                       <Input 
+                        placeholder="PASTE SECRET ID HERE"
+                        value={manualIdInput}
+                        onChange={(e) => setManualIdInput(e.target.value.toUpperCase())}
+                        className="h-24 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 text-3xl font-display tracking-[0.2em] px-10 placeholder:opacity-10 group-hover:bg-accent/50 transition-all text-foreground"
+                       />
+                       <div className="absolute right-8 top-1/2 -translate-y-1/2 p-2 bg-foreground text-background">
+                          <Eye className="w-6 h-6" />
+                       </div>
+                    </div>
+                    <Button 
+                      onClick={() => manualIdInput && handleLoadSecret(manualIdInput.trim())}
+                      className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all"
+                    >
+                      Retrieve Data
+                    </Button>
+                 </div>
+
+                 <div className="p-8 border-2 border-foreground border-dashed flex items-start gap-6 opacity-40 text-foreground">
+                    <AlertCircle className="w-6 h-6 shrink-0" />
+                    <p className="text-xs font-bold leading-relaxed uppercase italic">
+                      Passwords are the critical factor. If you enter the correct ID but the wrong password, the data remains scrambled. Ensure you have the exact credentials before attempting retrieval.
+                    </p>
+                 </div>
+              </motion.div>
+            )}
+
+            {viewState === 'SUCCESS' && (
+              <motion.div key="success" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-10 py-10">
+                <div className="flex flex-col gap-6">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-neon drop-shadow-[0_0_10px_rgba(0,255,0,0.5)]">Success.</h2>
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <p className="font-bold opacity-50 uppercase text-xs">The protocol has verified your transmission.</p>
+                    <div className="flex items-center gap-3 bg-foreground text-background px-4 py-2 border-b-4 border-neon">
+                      <span className="text-[10px] font-black uppercase tracking-widest leading-none">Views Remaining</span>
+                      <div className="flex gap-0.5">
+                        {Array.from({ length: Math.min(viewLimit, 10) }).map((_, i) => (
+                          <div key={i} className="w-1 h-3 bg-neon" />
+                        ))}
+                        {viewLimit > 10 && <span className="text-[9px] font-black ml-1 text-neon/70">+{viewLimit - 10}</span>}
+                      </div>
+                      <span className="text-xl font-display leading-none ml-2 text-neon">{viewLimit}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="p-1 bg-foreground">
+                    <div className="bg-background p-8 flex flex-col md:flex-row items-center justify-between gap-8 border-2 border-foreground">
+                      <div className="flex flex-col gap-1 w-full truncate text-foreground">
+                         <span className="text-[10px] font-black uppercase opacity-30 italic">Encrypted Endpoint</span>
+                         <div className="flex items-center gap-3">
+                            <code className="text-lg md:text-2xl font-display truncate select-all flex-1">{PUBLIC_BASE_URL}/#s={generatedId}</code>
+                            <Button 
+                              onClick={() => copyToClipboard('link')}
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 shrink-0 hover:text-neon transition-colors"
+                            >
+                               {copied ? <Check className="w-4 h-4 text-neon" /> : <Copy className="w-4 h-4" />}
+                            </Button>
+                         </div>
+                      </div>
+                      <div className="flex gap-2 shrink-0 w-full md:w-auto">
+                        <Button onClick={() => copyToClipboard('link')} className="flex-1 h-16 bg-foreground text-background hover:bg-neon hover:text-black rounded-none transition-all">
+                          {copied ? <Check /> : <Copy className="mr-2" />} Link
+                        </Button>
+                        <Button onClick={() => copyToClipboard('share')} className="flex-1 h-16 bg-neon text-black font-black border-2 border-black rounded-none">
+                           <Share2 className="mr-2" /> Share to Social
+                        </Button>
+                        <Button onClick={() => copyToClipboard('invite')} variant="outline" className="flex-1 h-16 border-2 border-foreground rounded-none font-bold text-foreground">
+                           Invite
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-6 bg-accent/50 flex flex-col md:flex-row justify-between items-center border-l-8 border-foreground group gap-4">
+                     <div className="flex flex-col gap-1 text-foreground w-full md:w-auto">
+                        <span className="font-bold uppercase text-[10px] opacity-40 italic underline underline-offset-4 tracking-widest">Physical Secret ID</span>
+                        <div className="flex items-center gap-4">
+                           <span className="text-3xl font-display tracking-[0.2em]">{generatedId}</span>
+                           <Button 
+                             onClick={() => copyToClipboard('id')}
+                             variant="ghost"
+                             size="icon"
+                             className="h-10 w-10 hover:bg-neon hover:text-black transition-all rounded-none border border-foreground/20"
+                           >
+                             {copied ? <Check className="w-4 h-4 text-neon" /> : <Copy className="w-4 h-4" />}
+                           </Button>
+                        </div>
+                     </div>
+                     <div className="flex items-center gap-2 w-full md:w-auto">
+                        <p className="text-[10px] font-black uppercase opacity-20 hidden md:block">Reference code for manual retrieval</p>
+                        <div className="h-0.5 w-12 bg-foreground/10 hidden md:block" />
+                     </div>
+                  </div>
+                </div>
+
+                <Button onClick={reset} variant="ghost" className="text-[10px] font-bold uppercase tracking-widest opacity-40 hover:opacity-100">
+                  Wipe & Resume Home
+                </Button>
+              </motion.div>
+            )}
+
+            {viewState === 'RETRIEVE' && (
+              <motion.div key="retrieve" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                <div className="space-y-2">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">ID Verified.</h2>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <p className="font-black opacity-50 uppercase text-xs tracking-widest italic">Target: {retrieveId} // Limit: {retrieveData?.viewLimit}</p>
+                    {retrieveData?.task && (
+                      <span className="bg-neon text-black px-3 py-1 text-[10px] font-black uppercase leading-none border border-black italic">Task: {retrieveData.task}</span>
+                    )}
+                  </div>
+                </div>
+
+                <form onSubmit={handleDecrypt} className="space-y-6">
                   <div className="space-y-2">
-                    <h3 className="text-3xl font-heading font-bold tracking-tight text-white">Admin Access</h3>
-                    <p className="text-muted-foreground">Enter password to enable edit mode.</p>
-                  </div>
-                  
-                  <form onSubmit={handlePasswordSubmit} className="w-full space-y-6 mt-4">
-                    <Input 
-                      type="password" 
-                      autoFocus
-                      placeholder="Password" 
-                      value={passwordInput}
-                      onChange={(e) => setPasswordInput(e.target.value)}
-                      className="rounded-2xl h-14 text-center text-xl tracking-[0.5em] font-bold bg-white/5 border-white/10 text-white placeholder:text-white/20"
-                    />
-                    {adminError && <p className="text-red-500 text-sm font-bold">{adminError}</p>}
-                    <div className="flex gap-4">
-                      <Button 
+                    <div className="relative group">
+                      <Input 
+                        type={showRevealPassword ? "text" : "password"}
+                        value={revealPassword}
+                        onChange={(e) => setRevealPassword(e.target.value)}
+                        placeholder="ENTER ACCESS PASSWORD"
+                        className="h-24 border-4 border-foreground rounded-none focus-visible:ring-0 bg-background text-foreground text-2xl font-black px-10 pr-24 placeholder:opacity-10 w-full transition-colors"
+                        required
+                      />
+                      <button
                         type="button"
-                        variant="ghost"
-                        onClick={() => setShowPasswordModal(false)}
-                        className="flex-1 rounded-2xl h-14 font-bold text-white hover:bg-white/5"
+                        onClick={() => setShowRevealPassword(!showRevealPassword)}
+                        className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-2 p-2 bg-foreground text-background hover:bg-neon hover:text-black transition-all"
                       >
-                        Cancel
-                      </Button>
-                      <Button 
-                        type="submit"
-                        className="flex-1 rounded-2xl h-14 font-bold bg-white text-black hover:bg-white/90"
-                      >
-                        Unlock
-                      </Button>
+                        {showRevealPassword ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}
+                        <span className="text-[10px] font-bold uppercase tracking-widest hidden md:inline">
+                          {showRevealPassword ? 'Hide' : 'Show'}
+                        </span>
+                      </button>
                     </div>
-                  </form>
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
-
-        {/* About Modal */}
-        <AnimatePresence>
-          {showAboutModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowAboutModal(false)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative bg-[#0A0A0A] rounded-[40px] p-12 w-full max-w-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-y-auto"
-              >
-                <div className="flex justify-between items-center mb-10">
-                  <h3 className="text-3xl font-heading font-bold tracking-tight text-white">Edit About Section</h3>
-                  <button onClick={() => setShowAboutModal(false)} className="p-3 hover:bg-white/5 rounded-full transition-colors text-white">
-                    <X className="w-6 h-6" />
-                  </button>
-                </div>
-                
-                <form onSubmit={handleAboutSubmit} className="space-y-8">
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Badge Text</label>
-                    <Input 
-                      required
-                      value={aboutForm.badge}
-                      onChange={(e) => setAboutForm({...aboutForm, badge: e.target.value})}
-                      placeholder="e.g. The Philosophy" 
-                      className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                    />
                   </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Main Heading</label>
-                    <Input 
-                      required
-                      value={aboutForm.title}
-                      onChange={(e) => setAboutForm({...aboutForm, title: e.target.value})}
-                      placeholder="Design that works as good as it looks." 
-                      className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Description</label>
-                    <Textarea 
-                      required
-                      value={aboutForm.description}
-                      onChange={(e) => setAboutForm({...aboutForm, description: e.target.value})}
-                      placeholder="Tell your story..." 
-                      className="rounded-2xl min-h-[160px] bg-white/5 border-white/10 p-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Image URL</label>
-                    <Input 
-                      required
-                      value={aboutForm.image}
-                      onChange={(e) => setAboutForm({...aboutForm, image: e.target.value})}
-                      placeholder="https://..." 
-                      className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="flex gap-4 pt-4">
-                    <Button 
-                      type="button"
-                      variant="ghost"
-                      onClick={() => setShowAboutModal(false)}
-                      className="flex-1 rounded-2xl h-14 font-bold text-white hover:bg-white/5"
-                    >
-                      Cancel
-                    </Button>
-                    <Button 
-                      type="submit"
-                      className="flex-1 rounded-2xl h-14 font-bold bg-white text-black hover:bg-white/90"
-                    >
-                      Save Changes
-                    </Button>
-                  </div>
+                  <Button type="submit" disabled={loading} className="w-full h-24 bg-foreground text-background rounded-none font-black text-2xl hover:bg-neon hover:text-black transition-all">
+                    {loading ? <RefreshCcw className="animate-spin" /> : 'REVEAL CONTENT'}
+                  </Button>
                 </form>
               </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
+            )}
 
-        {/* Project Modal */}
-        <AnimatePresence>
-          {showProjectModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowProjectModal(false)}
-                className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative bg-[#0A0A0A] rounded-[40px] p-12 w-full max-w-2xl shadow-2xl border border-white/10 max-h-[90vh] overflow-y-auto"
-              >
-                <div className="flex justify-between items-center mb-10">
-                  <h3 className="text-3xl font-heading font-bold tracking-tight text-white">
-                    {editingProjectIndex !== null ? 'Edit Project' : 'Add New Project'}
-                  </h3>
-                  <button onClick={() => setShowProjectModal(false)} className="p-3 hover:bg-white/5 rounded-full transition-colors text-white">
-                    <X className="w-6 h-6" />
-                  </button>
+            {viewState === 'REVEALED' && (
+              <motion.div key="revealed" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-8">
+                <div className="flex justify-between items-center border-b-4 border-foreground pb-4">
+                  <div className="space-y-2">
+                    <h2 className="text-[60px] font-display leading-none uppercase text-foreground">Revealed.</h2>
+                    {retrieveData?.task && (
+                      <Badge className="bg-neon text-black rounded-none font-black uppercase text-[10px] py-1 px-4 italic border border-black">
+                        Task: {retrieveData.task}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-right flex flex-col items-end gap-2">
+                     <div className="flex items-center gap-3 bg-foreground text-background px-3 py-1 border-l-4 border-neon shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)]">
+                        <span className="text-[9px] font-black uppercase tracking-widest">Remaining Views</span>
+                        <span className="text-2xl font-display leading-none text-neon">{Math.max(0, retrieveData.viewLimit - retrieveData.viewCount - 1)}</span>
+                     </div>
+                     <div className="text-foreground">
+                        <p className="text-[9px] font-black uppercase">Decrypted Payload</p>
+                        <p className="font-mono text-xs opacity-40">{new Date().toISOString()}</p>
+                     </div>
+                  </div>
                 </div>
-                
-                <form onSubmit={handleProjectSubmit} className="space-y-8">
-                  <div className="grid md:grid-cols-2 gap-8">
-                    <div className="space-y-3">
-                      <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Title</label>
-                      <Input 
-                        required
-                        value={projectForm.title}
-                        onChange={(e) => setProjectForm({...projectForm, title: e.target.value})}
-                        placeholder="e.g. Nexus Dashboard" 
-                        className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                      />
+                <div className="p-12 bg-foreground text-background min-h-[300px] flex items-center justify-center relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-4 font-display text-[10vw] opacity-[0.03] select-none uppercase text-background">SECRET</div>
+                  <p className="text-2xl md:text-3xl leading-relaxed whitespace-pre-wrap font-mono uppercase relative z-10 text-center tracking-tight italic">
+                    "{decryptedMessage}"
+                  </p>
+                </div>
+
+                {/* Secure Attachment Reveal */}
+                {retrieveData?.attachedFile && (
+                  <div className="p-8 border-4 border-foreground bg-accent/20 flex flex-col md:flex-row items-center justify-between gap-6">
+                    <div className="flex items-center gap-6">
+                       <div className="w-16 h-16 bg-foreground text-background flex items-center justify-center">
+                          <FileText className="w-8 h-8 text-neon" />
+                       </div>
+                       <div className="flex flex-col">
+                          <span className="text-[10px] font-black uppercase opacity-40">Attached Protocol Shard</span>
+                          <span className="text-xl font-black uppercase truncate max-w-[200px]">{retrieveData.attachedFile.name}</span>
+                       </div>
                     </div>
-                    <div className="space-y-3">
-                      <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Category</label>
-                      <Input 
-                        required
-                        value={projectForm.category}
-                        onChange={(e) => setProjectForm({...projectForm, category: e.target.value})}
-                        placeholder="e.g. SaaS" 
-                        className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Live Website Link</label>
-                    <Input 
-                      required
-                      value={projectForm.linkUrl}
-                      onChange={(e) => setProjectForm({...projectForm, linkUrl: e.target.value})}
-                      placeholder="https://yourwebsite.com" 
-                      className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Description</label>
-                    <Textarea 
-                      required
-                      value={projectForm.description}
-                      onChange={(e) => setProjectForm({...projectForm, description: e.target.value})}
-                      placeholder="Project overview..." 
-                      className="rounded-2xl min-h-[140px] bg-white/5 border-white/10 p-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] uppercase tracking-widest font-bold text-white/40 ml-1">Tags (comma separated)</label>
-                    <Input 
-                      value={projectForm.tags}
-                      onChange={(e) => setProjectForm({...projectForm, tags: e.target.value})}
-                      placeholder="React, Tailwind, Motion" 
-                      className="rounded-2xl h-14 bg-white/5 border-white/10 px-6 text-white placeholder:text-white/20"
-                    />
-                  </div>
-
-                  <div className="flex gap-4 pt-6">
-                    <Button 
-                      type="button"
-                      variant="outline"
-                      onClick={() => setShowProjectModal(false)}
-                      className="flex-1 rounded-2xl h-14 font-bold border-white/10 text-white hover:bg-white/5"
+                    <a 
+                      href={retrieveData.attachedFile.data} 
+                      download={retrieveData.attachedFile.name}
+                      className="h-16 px-10 bg-neon text-black font-black uppercase text-sm flex items-center gap-3 hover:bg-white transition-all shadow-[8px_8px_0px_0px_var(--color-foreground)] active:shadow-none active:translate-x-1 active:translate-y-1"
                     >
-                      Cancel
-                    </Button>
-                    <Button 
-                      type="submit"
-                      className="flex-1 rounded-2xl h-14 font-bold bg-white text-black hover:bg-white/90"
-                    >
-                      {editingProjectIndex !== null ? 'Save Changes' : 'Add Project'}
-                    </Button>
+                      <Download className="w-5 h-5" />
+                      Retrieve File
+                    </a>
                   </div>
-                </form>
+                )}
+
+                <div className="p-6 border-4 border-foreground bg-neon/10 flex gap-6 items-center">
+                   <ShieldCheck className="w-10 h-10 shrink-0 text-foreground" />
+                   <p className="text-sm font-black uppercase leading-tight italic text-foreground">
+                     Caution: This message is ephemeral. Once you close this session or the view limit is reached, it will be purged from existence.
+                   </p>
+                </div>
+                <Button onClick={reset} className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">EXPIRE SESSION</Button>
               </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
-      </div>
+            )}
+
+            {viewState === 'HOW_IT_WORKS' && (
+               <motion.div key="how" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase italic text-foreground">The Flow.</h2>
+                  <div className="space-y-8">
+                     {[
+                       { t: "Compose", d: "Write your message in our secure editor. Your data is purely local until locked." },
+                       { t: "Encrypt", d: "Set a password. Our AES-256 algorithm scrambles the text into a secure shard." },
+                       { t: "Transmit", d: "A unique URL and ID are generated. Share them only with your target." },
+                       { t: "Destroy", d: "Once opened, the message is marked for termination. Zero logs remain." }
+                     ].map((step, i) => (
+                       <div key={i} className="flex gap-8 group text-foreground">
+                          <span className="text-4xl font-display opacity-10 group-hover:opacity-100 group-hover:text-neon transition-all">0{i+1}</span>
+                          <div className="space-y-1">
+                             <h3 className="text-xl font-black uppercase">{step.t}</h3>
+                             <p className="opacity-50 text-sm max-w-sm leading-relaxed">{step.d}</p>
+                          </div>
+                       </div>
+                     ))}
+                  </div>
+                  <Button onClick={() => setViewState('CREATE')} className="h-20 px-12 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">Begin Phase 01</Button>
+               </motion.div>
+            )}
+
+            {viewState === 'CONTACT' && (
+               <motion.div key="contact" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">Support.</h2>
+                  <div className="p-12 border-4 border-foreground space-y-6 text-foreground bg-background">
+                     <p className="font-bold text-xl uppercase italic">Need assistance with the protocol?</p>
+                     <p className="opacity-60 leading-relaxed">
+                       IDB Secret Message is a privacy-first platform. Due to our zero-knowledge architecture, we cannot recover forgotten passwords or messages. 
+                     </p>
+                      <div className="pt-6 space-y-4">
+                         <p className="text-xs font-black uppercase opacity-30 tracking-widest">Admin Support Channel</p>
+                         <Button 
+                           asChild
+                           className="h-20 px-8 bg-foreground text-background hover:bg-neon hover:text-black transition-all rounded-none w-full md:w-auto"
+                         >
+                            <a 
+                              href="https://wa.me/2349017837108" 
+                              target="_blank" 
+                              rel="noreferrer"
+                              className="flex items-center justify-center gap-4"
+                            >
+                              <MessageCircle className="w-8 h-8" />
+                              <div className="flex flex-col items-start leading-tight">
+                                 <span className="text-xl font-display uppercase italic">Open Secure Chat</span>
+                                 <span className="text-[10px] font-black opacity-60 uppercase tracking-tighter">+234 901 783 7108</span>
+                              </div>
+                            </a>
+                         </Button>
+                      </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                     <div className="p-6 bg-foreground text-background space-y-2">
+                        <p className="text-[10px] font-bold opacity-40 uppercase">Location</p>
+                        <p className="font-bold italic">SECURE NODE 01</p>
+                     </div>
+                     <div className="p-6 border-4 border-foreground space-y-2 text-foreground">
+                        <p className="text-[10px] font-bold opacity-40 uppercase">Response Time</p>
+                        <p className="font-bold italic">&lt; 12 HOURS</p>
+                     </div>
+                  </div>
+               </motion.div>
+            )}
+
+            {viewState === 'ABOUT' && (
+               <motion.div key="about" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">The Protocol.</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-12 font-medium leading-relaxed opacity-70 text-foreground">
+                    <div className="space-y-4">
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 01: Client Side</h3>
+                       <p>Your message never leaves your device unencrypted. We utilize AES-GCM 256-bit encryption before any data touches the network.</p>
+                    </div>
+                    <div className="space-y-4">
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 02: Distribution</h3>
+                       <p>Encrypted blobs are stored in a distributed vault. Without your unique password, the data is indistinguishable from random noise.</p>
+                    </div>
+                    <div className="space-y-4">
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 03: Destruction</h3>
+                       <p>Messages are strictly limited by view count. Our server triggers an immediate purge once the limit is hit. Residual data is nil.</p>
+                    </div>
+                    <div className="space-y-4">
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 04: Zero Trust</h3>
+                       <p>We don't know who you are. No accounts. No tracking. No logs. Just the message and the receiver.</p>
+                    </div>
+                  </div>
+                  <Button onClick={() => setViewState('CREATE')} className="w-full h-20 border-4 border-foreground bg-background text-foreground text-xl font-black uppercase rounded-none hover:bg-foreground hover:text-background transition-all">START TRANSMISSION</Button>
+               </motion.div>
+            )}
+
+            {viewState === 'SECURITY' && (
+              <motion.div key="security" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12 bg-background text-foreground p-8 md:p-16 border-4 border-foreground">
+                 <div className="space-y-2">
+                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-neon">Black Box <br /> Security.</h2>
+                    <p className="font-mono text-sm opacity-40">Standard // ISO-3103-IDB</p>
+                 </div>
+                 <div className="space-y-8 max-w-xl font-mono text-xs uppercase tracking-widest leading-loose">
+                    <p className="border-l-2 border-neon pl-6">
+                      [01] ALL INTER-PROCESS COMMUNICATION IS TUNNELED VIA TLS 1.3
+                    </p>
+                    <p className="border-l-2 border-neon pl-6">
+                      [02] KEYS ARE DERIVED USING PBKDF2 WITH 100,000 ITERATIONS
+                    </p>
+                    <p className="border-l-2 border-neon pl-6">
+                      [03] VOLATILE STORAGE ONLY. NO PERSISTENT LOGGING OF RETRIEVAL ATTEMPTS
+                    </p>
+                    <p className="border-l-2 border-neon pl-6">
+                      [04] CLIENT-SIDE PASSWORD MASKING PREVENTS SHOULDER SURFING
+                    </p>
+                 </div>
+                 <div className="pt-8 flex gap-4">
+                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">256</div>
+                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">BWA</div>
+                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">GCM</div>
+                 </div>
+              </motion.div>
+            )}
+
+            {/* Error / Expired States simplified for the Wilder UI */}
+            {['EXPIRED', 'ERROR'].includes(viewState) && (
+              <motion.div key="status" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12 py-20">
+                 <h2 className="text-[60px] md:text-[120px] font-display leading-none uppercase opacity-10 text-foreground">TERMINATED.</h2>
+                 <p className="text-xl font-black uppercase italic border-l-8 border-foreground pl-8 max-w-md text-foreground">
+                   {viewState === 'EXPIRED' ? 'The data you are looking for has been purged or never existed within this node.' : error}
+                 </p>
+                 <Button onClick={reset} className="h-20 px-12 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">RESTORE NODE</Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Global Footer (Subtle) */}
+        <footer className="mt-auto px-16 py-8 border-t border-foreground/5 flex justify-between items-center gap-8 text-[10px] font-black uppercase tracking-widest opacity-20 transition-colors">
+           <span>App Created and designed By Bukola</span>
+           <div className="hidden md:flex gap-8">
+              <span>LAT: 40.7128° N</span>
+              <span>LON: 74.0060° W</span>
+              <span>VER: 5.0.0</span>
+           </div>
+        </footer>
+      </main>
     </div>
   );
 }

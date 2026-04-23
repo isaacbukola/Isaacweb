@@ -1,6 +1,9 @@
 {
-  "name": "ISAAC Web. solution",
-  "description": "High-end portfolio for a Website Specialist featuring minimalist design, bento grids, and glassmorphism.",
-  "requestFramePermissions": [],
+  "name": "IDB Secret Message",
+  "description": "Secure, encrypted secret messages with view limits and password protection. Minimalist black & white design.",
+  "requestFramePermissions": [
+    "clipboard-read",
+    "clipboard-write"
+  ],
   "majorCapabilities": []
 }
