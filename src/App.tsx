@@ -21,7 +21,8 @@ import {
   Upload,
   FileText,
   X,
-  Download
+  Download,
+  MessageCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -88,6 +89,15 @@ export default function App() {
   }), [password]);
 
   const isPasswordValid = passwordCriteria.length && passwordCriteria.digit && passwordCriteria.special;
+
+  const passwordStrength = useMemo(() => {
+    if (!password) return 0;
+    let score = 0;
+    if (passwordCriteria.length) score += 33.3;
+    if (passwordCriteria.digit) score += 33.3;
+    if (passwordCriteria.special) score += 33.4;
+    return score;
+  }, [password, passwordCriteria]);
 
   const processFile = (file: File) => {
     if (file.size > 600000) {
@@ -377,9 +387,9 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 relative min-h-screen flex flex-col">
         {/* Background Marquee / Graphic */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0 opacity-[0.03]">
-           <h2 className="text-[30vw] font-display uppercase leading-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap">
-             {viewState}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0 opacity-[0.05]">
+           <h2 className="text-[25vw] font-display uppercase leading-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap select-none rotate-[-10deg]">
+             BUKOLA
            </h2>
         </div>
 
@@ -564,6 +574,24 @@ export default function App() {
                         >
                           {showCreatePassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                         </button>
+                      </div>
+
+                      {/* Password Strength Meter */}
+                      <div className="md:col-span-2 space-y-1">
+                        <div className="h-1.5 w-full bg-foreground/10 overflow-hidden">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ 
+                              width: `${passwordStrength}%`,
+                              backgroundColor: passwordStrength < 40 ? '#ef4444' : passwordStrength < 80 ? '#eab308' : '#00ff00' 
+                            }}
+                            className="h-full transition-all duration-500"
+                          />
+                        </div>
+                        <div className="flex justify-between text-[8px] font-black uppercase tracking-tighter opacity-40 italic">
+                          <span>Entropy: {Math.round(passwordStrength)}%</span>
+                          <span>Status: {passwordStrength === 0 ? 'Awaiting Data' : passwordStrength < 40 ? 'Vulnerable' : passwordStrength < 80 ? 'Developing' : 'Secure Shard'}</span>
+                        </div>
                       </div>
 
                       <div className="md:col-span-2 flex flex-wrap gap-4 pt-2">
