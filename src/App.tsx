@@ -99,6 +99,15 @@ export default function App() {
     return score;
   }, [password, passwordCriteria]);
 
+  const passwordStrength = useMemo(() => {
+    if (!password) return 0;
+    let score = 0;
+    if (passwordCriteria.length) score += 33.3;
+    if (passwordCriteria.digit) score += 33.3;
+    if (passwordCriteria.special) score += 33.4;
+    return score;
+  }, [password, passwordCriteria]);
+
   const processFile = (file: File) => {
     if (file.size > 600000) {
       setError("Terminal Limit Reached: Shard exceeds 600KB secure threshold. Please compress or split your file.");
@@ -594,6 +603,24 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Password Strength Meter */}
+                      <div className="md:col-span-2 space-y-1">
+                        <div className="h-1.5 w-full bg-foreground/10 overflow-hidden">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ 
+                              width: `${passwordStrength}%`,
+                              backgroundColor: passwordStrength < 40 ? '#ef4444' : passwordStrength < 80 ? '#eab308' : '#00ff00' 
+                            }}
+                            className="h-full transition-all duration-500"
+                          />
+                        </div>
+                        <div className="flex justify-between text-[8px] font-black uppercase tracking-tighter opacity-40 italic">
+                          <span>Entropy: {Math.round(passwordStrength)}%</span>
+                          <span>Status: {passwordStrength === 0 ? 'Awaiting Data' : passwordStrength < 40 ? 'Vulnerable' : passwordStrength < 80 ? 'Developing' : 'Secure Shard'}</span>
+                        </div>
+                      </div>
+
                       <div className="md:col-span-2 flex flex-wrap gap-4 pt-2">
                         <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.length ? 'text-neon' : 'opacity-30'}`}>
                           <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.length ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
@@ -876,23 +903,18 @@ export default function App() {
                      </p>
                       <div className="pt-6 space-y-4">
                          <p className="text-xs font-black uppercase opacity-30 tracking-widest">Admin Support Channel</p>
-                         <Button 
-                           asChild
-                           className="h-20 px-8 bg-foreground text-background hover:bg-neon hover:text-black transition-all rounded-none w-full md:w-auto"
+                         <a 
+                           href="https://wa.me/2349017837108" 
+                           target="_blank" 
+                           rel="noreferrer"
+                           className="flex items-center justify-center gap-4 h-20 px-8 bg-foreground text-background hover:bg-neon hover:text-black transition-all rounded-none w-full md:w-auto text-center"
                          >
-                            <a 
-                              href="https://wa.me/2349017837108" 
-                              target="_blank" 
-                              rel="noreferrer"
-                              className="flex items-center justify-center gap-4"
-                            >
-                              <MessageCircle className="w-8 h-8" />
-                              <div className="flex flex-col items-start leading-tight">
-                                 <span className="text-xl font-display uppercase italic">Open Secure Chat</span>
-                                 <span className="text-[10px] font-black opacity-60 uppercase tracking-tighter">+234 901 783 7108</span>
-                              </div>
-                            </a>
-                         </Button>
+                            <MessageCircle className="w-8 h-8" />
+                            <div className="flex flex-col items-start leading-tight">
+                               <span className="text-xl font-display uppercase italic">Open Secure Chat</span>
+                               <span className="text-[10px] font-black opacity-60 uppercase tracking-tighter">+234 901 783 7108</span>
+                            </div>
+                         </a>
                       </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
@@ -974,13 +996,13 @@ export default function App() {
           </AnimatePresence>
         </div>
 
-        {/* Global Footer (Subtle) */}
-        <footer className="mt-auto px-16 py-8 border-t border-foreground/5 flex justify-between items-center gap-8 text-[10px] font-black uppercase tracking-widest opacity-20 transition-colors">
-           <span>App Created and designed By Bukola</span>
-           <div className="hidden md:flex gap-8">
-              <span>LAT: 40.7128° N</span>
-              <span>LON: 74.0060° W</span>
-              <span>VER: 5.0.0</span>
+        {/* Global Footer (Sharp & Bold) */}
+        <footer className="mt-auto px-16 py-12 border-t border-foreground/10 flex justify-between items-center gap-8 text-xs font-black uppercase tracking-[0.3em] text-foreground transition-all">
+           <span className="hover:text-neon transition-colors cursor-default">App Created and designed By Bukola</span>
+           <div className="hidden md:flex gap-12 opacity-40">
+              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> LAT: 4.128° N</span>
+              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> LON: 7.006° W</span>
+              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> VER: 5.0.0</span>
            </div>
         </footer>
       </main>
