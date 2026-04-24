@@ -76,8 +76,10 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [password, setPassword] = useState('');
   const [viewLimit, setViewLimit] = useState(1);
+  const [expiryHours, setExpiryHours] = useState(24);
   const [generatedId, setGeneratedId] = useState('');
   const [copied, setCopied] = useState(false);
+  const [autoCopied, setAutoCopied] = useState(false);
   const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -182,7 +184,11 @@ export default function App() {
 
       if (docSnap.exists()) {
         const data = docSnap.data();
-        if (data.viewCount >= data.viewLimit) {
+        const now = new Date();
+        const expiresAt = data.expiresAt?.toDate();
+        const isExpired = expiresAt && now > expiresAt;
+
+        if (data.viewCount >= data.viewLimit || isExpired) {
           setViewState('EXPIRED');
         } else {
           setRetrieveData(data);
@@ -223,6 +229,8 @@ export default function App() {
       const { encryptedData, iv, salt } = await encryptMessage(payload, password);
       const id = nanoid(8).toUpperCase(); 
       
+      const expiresAt = expiryHours > 0 ? new Date(Date.now() + expiryHours * 3600000) : null;
+
       const secretData = {
         task: task.trim(),
         encryptedData,
@@ -230,6 +238,7 @@ export default function App() {
         salt,
         viewLimit: Number(viewLimit),
         viewCount: 0,
+        expiresAt: expiresAt,
         createdAt: serverTimestamp(),
       };
 
@@ -237,6 +246,13 @@ export default function App() {
       
       setGeneratedId(id);
       setViewState('SUCCESS');
+
+      // Auto-copy sequence
+      const url = `${window.location.origin.replace(/\/$/, '')}/#s=${id}`;
+      navigator.clipboard.writeText(url);
+      setAutoCopied(true);
+      setTimeout(() => setAutoCopied(false), 5000);
+
     } catch (err) {
       setError("Encryption Failure: Critical handshake error during vault transmission. Refresh and try again.");
     } finally {
@@ -628,15 +644,34 @@ export default function App() {
                         </div>
                       </div>
 
-                      <Input 
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={viewLimit}
-                        onChange={(e) => setViewLimit(parseInt(e.target.value))}
-                        placeholder="VIEW LIMIT"
-                        className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 transition-colors"
-                      />
+                      <div className="space-y-4">
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-black uppercase opacity-40">Destruction Timer</span>
+                          <select 
+                            value={expiryHours}
+                            onChange={(e) => setExpiryHours(Number(e.target.value))}
+                            className="w-full h-16 border-4 border-foreground bg-background rounded-none focus:outline-none font-bold px-6 uppercase transition-colors appearance-none cursor-pointer hover:bg-accent/50"
+                          >
+                            <option value={1}>1 HR - EPHEMERAL SHARD</option>
+                            <option value={24}>24 HRS - STANDARD SHARD</option>
+                            <option value={168}>7 DAYS - PERSISTENT SHARD</option>
+                            <option value={0}>PERMANENT (LIMIT READ ONLY)</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-black uppercase opacity-40">View Access Limit</span>
+                          <Input 
+                            type="number"
+                            min="1"
+                            max="50"
+                            value={viewLimit}
+                            onChange={(e) => setViewLimit(parseInt(e.target.value))}
+                            placeholder="VIEW LIMIT"
+                            className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 transition-colors"
+                          />
+                        </div>
+                      </div>
                     </div>
                     <Button type="submit" disabled={loading || !isPasswordValid} className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all disabled:opacity-20 disabled:cursor-not-allowed">
                        {loading ? <RefreshCcw className="animate-spin" /> : 'Lock Session'}
@@ -683,6 +718,23 @@ export default function App() {
 
             {viewState === 'SUCCESS' && (
               <motion.div key="success" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-10 py-10">
+                <AnimatePresence>
+                  {autoCopied && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -20 }}
+                      className="bg-neon text-black p-4 text-xs font-black uppercase flex items-center justify-between border-2 border-black"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Check className="w-4 h-4" />
+                        Protocol Link Auto-Copied to Clipboard
+                      </div>
+                      <span className="opacity-50 italic">Ready for share</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                
                 <div className="flex flex-col gap-6">
                   <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-neon drop-shadow-[0_0_10px_rgba(0,255,0,0.5)]">Success.</h2>
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -888,26 +940,45 @@ export default function App() {
             )}
 
             {viewState === 'HOW_IT_WORKS' && (
-               <motion.div key="how" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase italic text-foreground">The Flow.</h2>
-                  <div className="space-y-8">
-                     {[
-                       { t: "Compose", d: "Write your message in our secure editor. Your data is purely local until locked." },
-                       { t: "Encrypt", d: "Set a password. Our AES-256 algorithm scrambles the text into a secure shard." },
-                       { t: "Transmit", d: "A unique URL and ID are generated. Share them only with your target." },
-                       { t: "Destroy", d: "Once opened, the message is marked for termination. Zero logs remain." }
-                     ].map((step, i) => (
-                       <div key={i} className="flex gap-8 group text-foreground">
-                          <span className="text-4xl font-display opacity-10 group-hover:opacity-100 group-hover:text-neon transition-all">0{i+1}</span>
-                          <div className="space-y-1">
-                             <h3 className="text-xl font-black uppercase">{step.t}</h3>
-                             <p className="opacity-50 text-sm max-w-sm leading-relaxed">{step.d}</p>
-                          </div>
-                       </div>
-                     ))}
-                  </div>
-                  <Button onClick={() => setViewState('CREATE')} className="h-20 px-12 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">Begin Phase 01</Button>
-               </motion.div>
+              <motion.div key="how" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                <div className="space-y-2">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">The <br /> Protocol.</h2>
+                  <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">How IDB handles your sensitive data.</p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                   <div className="space-y-6">
+                      <div className="space-y-2">
+                         <h3 className="text-2xl font-black uppercase italic text-neon">01. End-To-End Encryption</h3>
+                         <p className="text-sm opacity-60 leading-relaxed">Everything happens in your browser. We use the enterprise-grade AES-256 GCM encryption protocol. Your message is scrambled using your personal password before it ever leaves your device.</p>
+                      </div>
+                      <div className="space-y-2">
+                         <h3 className="text-2xl font-black uppercase italic text-neon">02. Secure Transmission</h3>
+                         <p className="text-sm opacity-60 leading-relaxed">The encrypted payload (the "secret shard") is uploaded to our secure database with a unique ID. Because we don't store your password, the data remains a zero-knowledge secret.</p>
+                      </div>
+                   </div>
+                   <div className="space-y-6">
+                      <div className="space-y-2">
+                         <h3 className="text-2xl font-black uppercase italic text-neon">03. Automated Destruction</h3>
+                         <p className="text-sm opacity-60 leading-relaxed">Once the view limit is hit or the expiry timer runs out, the shard becomes inaccessible. Our one-time links ensure that your sensitive data doesn't persist on any server.</p>
+                      </div>
+                      <div className="space-y-2">
+                         <h3 className="text-2xl font-black uppercase italic text-neon">04. Local Retrieval</h3>
+                         <p className="text-sm opacity-60 leading-relaxed">The receiver needs both the link and the matching password key. Decryption happens locally on their web browser, ensuring total privacy from end to end.</p>
+                      </div>
+                   </div>
+                </div>
+
+                <div className="p-8 bg-foreground text-background">
+                   <h4 className="font-black uppercase mb-4 text-xs tracking-widest">When to use IDB Secret Message?</h4>
+                   <ul className="grid grid-cols-1 md:grid-cols-2 gap-4 text-[10px] font-bold uppercase italic">
+                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Share Passwords & Login Credentials</li>
+                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Secure File & Photo Sharing</li>
+                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Self-Destructing Notes for Privacy</li>
+                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Gain Traffic with Private Invite Links</li>
+                   </ul>
+                </div>
+              </motion.div>
             )}
 
             {viewState === 'CONTACT' && (
@@ -949,54 +1020,77 @@ export default function App() {
 
             {viewState === 'ABOUT' && (
                <motion.div key="about" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">The Protocol.</h2>
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">The IDB System.</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-12 font-medium leading-relaxed opacity-70 text-foreground">
                     <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 01: Client Side</h3>
-                       <p>Your message never leaves your device unencrypted. We utilize AES-GCM 256-bit encryption before any data touches the network.</p>
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Mission: Privacy First</h3>
+                       <p>IDB Secret Message was built to solve the "last mile" problem of digital security: sharing text and files without leaving a digital trail. Whether you're a developer sharing API keys or an individual sending private photos, IDB ensures your data is ephemeral.</p>
                     </div>
                     <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 02: Distribution</h3>
-                       <p>Encrypted blobs are stored in a distributed vault. Without your unique password, the data is indistinguishable from random noise.</p>
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Global Search Ranking</h3>
+                       <p>Our platform is designed to be highly accessible and discoverable. By creating high-quality, secure links, IDB helps users communicate securely across any platform while maintaining optimal performance and privacy levels.</p>
                     </div>
                     <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 03: Destruction</h3>
-                       <p>Messages are strictly limited by view count. Our server triggers an immediate purge once the limit is hit. Residual data is nil.</p>
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">One-Time Use</h3>
+                       <p>Messages are strictly limited by view counts and destruction timers. Our platform is the choice for anyone needing a "Burn After Reading" feature for their sensitive information.</p>
                     </div>
                     <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Phase 04: Zero Trust</h3>
-                       <p>We don't know who you are. No accounts. No tracking. No logs. Just the message and the receiver.</p>
+                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Zero Logs</h3>
+                       <p>We don't track browser history, IP addresses, or user profiles. No accounts required. Just pure, unadulterated privacy for your secret messages.</p>
                     </div>
                   </div>
-                  <Button onClick={() => setViewState('CREATE')} className="w-full h-20 border-4 border-foreground bg-background text-foreground text-xl font-black uppercase rounded-none hover:bg-foreground hover:text-background transition-all">START TRANSMISSION</Button>
+                  <Button onClick={() => setViewState('CREATE')} className="w-full h-20 border-4 border-foreground bg-background text-foreground text-xl font-black uppercase rounded-none hover:bg-foreground hover:text-background transition-all">DEPLOY SECRET MESSAGE</Button>
                </motion.div>
             )}
 
             {viewState === 'SECURITY' && (
               <motion.div key="security" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12 bg-background text-foreground p-8 md:p-16 border-4 border-foreground">
-                 <div className="space-y-2">
-                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-neon">Black Box <br /> Security.</h2>
-                    <p className="font-mono text-sm opacity-40">Standard // ISO-3103-IDB</p>
-                 </div>
-                 <div className="space-y-8 max-w-xl font-mono text-xs uppercase tracking-widest leading-loose">
-                    <p className="border-l-2 border-neon pl-6">
-                      [01] ALL INTER-PROCESS COMMUNICATION IS TUNNELED VIA TLS 1.3
-                    </p>
-                    <p className="border-l-2 border-neon pl-6">
-                      [02] KEYS ARE DERIVED USING PBKDF2 WITH 100,000 ITERATIONS
-                    </p>
-                    <p className="border-l-2 border-neon pl-6">
-                      [03] VOLATILE STORAGE ONLY. NO PERSISTENT LOGGING OF RETRIEVAL ATTEMPTS
-                    </p>
-                    <p className="border-l-2 border-neon pl-6">
-                      [04] CLIENT-SIDE PASSWORD MASKING PREVENTS SHOULDER SURFING
-                    </p>
-                 </div>
-                 <div className="pt-8 flex gap-4">
-                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">256</div>
-                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">BWA</div>
-                    <div className="w-12 h-12 border-2 border-neon flex items-center justify-center text-neon font-black italic">GCM</div>
-                 </div>
+                <div className="space-y-2">
+                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Shielded.</h2>
+                  <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">End-to-End Cryptography for Personal Privacy.</p>
+                </div>
+
+                <div className="space-y-8">
+                   <div className="space-y-4">
+                      <ShieldCheck className="w-12 h-12 text-neon" />
+                      <h3 className="text-3xl font-black uppercase tracking-tighter">Zero-Knowledge Architecture</h3>
+                      <p className="opacity-60 text-sm leading-relaxed">
+                        IDB is engineered on the principle that the platform should never be able to access your private conversations. 
+                        By leveraging the Web Crypto API, your secret password acts as the primary decryption key that remains on your device. 
+                        We never transmit your password to any server. Even if our database was breached, your messages remain secure, encrypted blobs.
+                      </p>
+                   </div>
+
+                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
+                         <span className="text-[9px] font-black uppercase opacity-40">Encryption Engine</span>
+                         <p className="font-bold">AES-GCM 256-bit</p>
+                      </div>
+                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
+                         <span className="text-[9px] font-black uppercase opacity-40">Key Derivation</span>
+                         <p className="font-bold">PBKDF2 (100k Iterations)</p>
+                      </div>
+                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
+                         <span className="text-[9px] font-black uppercase opacity-40">Safe Storage</span>
+                         <p className="font-bold">Encrypted Shards Only</p>
+                      </div>
+                   </div>
+
+                   <div className="p-8 border-2 border-foreground/20 space-y-6">
+                      <h2 className="text-[30px] font-display leading-none uppercase text-neon">Black Box Core.</h2>
+                      <div className="space-y-4 max-w-xl font-mono text-[10px] uppercase tracking-widest leading-loose">
+                         <p className="border-l-2 border-neon pl-6">[01] All IPC tunneled via TLS 1.3 encryption layers.</p>
+                         <p className="border-l-2 border-neon pl-6">[02] Keys derived using PBKDF2 with 100,000 iterations.</p>
+                         <p className="border-l-2 border-neon pl-6">[03] Volatile storage profile. No persistent tracking logs.</p>
+                         <p className="border-l-2 border-neon pl-6">[04] Client-side password masking prevents visual leaks.</p>
+                      </div>
+                      <div className="flex gap-4">
+                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">256</div>
+                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">BWA</div>
+                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">GCM</div>
+                      </div>
+                   </div>
+                </div>
               </motion.div>
             )}
 
