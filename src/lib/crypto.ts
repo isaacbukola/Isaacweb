@@ -5,7 +5,29 @@
 const ITERATIONS = 100000;
 const KEY_LENGTH = 256;
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export async function encryptMessage(message: string, password: string) {
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error("Web Crypto API not available. Protocol requires a secure (HTTPS) environment.");
+  }
   const enc = new TextEncoder();
   const salt = window.crypto.getRandomValues(new Uint8Array(16));
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -38,9 +60,9 @@ export async function encryptMessage(message: string, password: string) {
   );
 
   return {
-    encryptedData: btoa(String.fromCharCode(...new Uint8Array(encryptedContent))),
-    iv: btoa(String.fromCharCode(...iv)),
-    salt: btoa(String.fromCharCode(...salt)),
+    encryptedData: uint8ArrayToBase64(new Uint8Array(encryptedContent)),
+    iv: uint8ArrayToBase64(iv),
+    salt: uint8ArrayToBase64(salt),
   };
 }
 
@@ -50,24 +72,15 @@ export async function decryptMessage(
   saltB64: string,
   password: string
 ) {
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error("Web Crypto API not available. Protocol requires a secure (HTTPS) environment.");
+  }
   const enc = new TextEncoder();
   const dec = new TextDecoder();
 
-  const encryptedData = new Uint8Array(
-    atob(encryptedDataB64)
-      .split('')
-      .map((c) => c.charCodeAt(0))
-  );
-  const iv = new Uint8Array(
-    atob(ivB64)
-      .split('')
-      .map((c) => c.charCodeAt(0))
-  );
-  const salt = new Uint8Array(
-    atob(saltB64)
-      .split('')
-      .map((c) => c.charCodeAt(0))
-  );
+  const encryptedData = base64ToUint8Array(encryptedDataB64);
+  const iv = base64ToUint8Array(ivB64);
+  const salt = base64ToUint8Array(saltB64);
 
   const passwordKey = await window.crypto.subtle.importKey(
     'raw',

@@ -14,12 +14,47 @@
         "expiresAt": { "type": "string", "format": "date-time" }
       },
       "required": ["encryptedData", "iv", "salt", "viewLimit", "viewCount", "createdAt"]
+    },
+    "ChatRoom": {
+      "title": "ChatRoom",
+      "description": "A temporary secure chat session (24h protocol)",
+      "type": "object",
+      "properties": {
+        "roomCode": { "type": "string" },
+        "encryptedValidator": { "type": "string", "description": "Verification shard to check password" },
+        "iv": { "type": "string" },
+        "salt": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomCode", "encryptedValidator", "iv", "salt", "createdAt", "expiresAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "An encrypted message within a chat room",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "encryptedText": { "type": "string" },
+        "iv": { "type": "string" },
+        "salt": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "encryptedText", "iv", "salt", "timestamp"]
     }
   },
   "firestore": {
     "/secrets/{secretId}": {
       "schema": "Secret",
       "description": "Secure storage for encrypted messages"
+    },
+    "/chatRooms/{roomId}": {
+      "schema": "ChatRoom",
+      "description": "Metadata for a chat session"
+    },
+    "/chatRooms/{roomId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Individual messages in a room"
     }
   }
 }

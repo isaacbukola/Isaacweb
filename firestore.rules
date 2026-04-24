@@ -29,6 +29,23 @@ service cloud.firestore {
              data.createdAt is timestamp;
     }
 
+    function isValidChatRoom(data) {
+      return data.roomCode is string && data.roomCode.size() <= 128 &&
+             data.encryptedValidator is string && data.encryptedValidator.size() <= 5000 &&
+             data.iv is string && data.iv.size() <= 64 &&
+             data.salt is string && data.salt.size() <= 64 &&
+             data.createdAt is timestamp &&
+             data.expiresAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.senderId is string && data.senderId.size() <= 128 &&
+             data.encryptedText is string && data.encryptedText.size() <= 50000 &&
+             data.iv is string && data.iv.size() <= 64 &&
+             data.salt is string && data.salt.size() <= 64 &&
+             data.timestamp is timestamp;
+    }
+
     match /secrets/{secretId} {
       // Anyone can create a secret
       allow create: if isValidId(secretId) && 
@@ -37,8 +54,6 @@ service cloud.firestore {
                       incoming().createdAt == request.time;
 
       // Anyone can get a secret IF the view limit hasn't been reached
-      // Note: We don't check for password here because encryption is client-side.
-      // But we prevent reading if it's "spent".
       allow get: if existing().viewCount < existing().viewLimit;
 
       // Allow updating ONLY the viewCount
@@ -47,8 +62,19 @@ service cloud.firestore {
                       incoming().viewCount == existing().viewCount + 1 &&
                       incoming().viewCount <= existing().viewLimit;
       
-      // No deletion allowed by clients (keep it simple for now)
       allow delete: if false;
+    }
+
+    match /chatRooms/{roomId} {
+      allow create: if isValidId(roomId) && isValidChatRoom(incoming()) && incoming().createdAt == request.time;
+      allow get: if true;
+    }
+
+    match /chatRooms/{roomId}/messages/{messageId} {
+      allow create: if isValidId(messageId) && isValidChatMessage(incoming()) && 
+                      incoming().timestamp == request.time &&
+                      get(/databases/$(database)/documents/chatRooms/$(roomId)).data.expiresAt > request.time;
+      allow list, get: if get(/databases/$(database)/documents/chatRooms/$(roomId)).data.expiresAt > request.time;
     }
   }
 }

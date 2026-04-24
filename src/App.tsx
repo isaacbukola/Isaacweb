@@ -36,7 +36,12 @@ import {
   setDoc, 
   updateDoc, 
   increment,
-  serverTimestamp 
+  serverTimestamp,
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  limit
 } from 'firebase/firestore';
 import { encryptMessage, decryptMessage } from './lib/crypto';
 import { nanoid } from 'nanoid';
@@ -45,7 +50,7 @@ import { nanoid } from 'nanoid';
 const APP_NAME = "IDB SECRET MESSAGE";
 const PUBLIC_BASE_URL = "https://ais-pre-dmeg54kczs4raume2zyf4x-298283305183.europe-west1.run.app";
 
-type ViewState = 'LANDING' | 'CREATE' | 'DISCOVER' | 'SUCCESS' | 'RETRIEVE' | 'REVEALED' | 'EXPIRED' | 'ERROR' | 'LOADING' | 'ABOUT' | 'SECURITY' | 'HOW_IT_WORKS' | 'CONTACT';
+type ViewState = 'LANDING' | 'CREATE' | 'DISCOVER' | 'CHAT' | 'SUCCESS' | 'RETRIEVE' | 'REVEALED' | 'EXPIRED' | 'ERROR' | 'LOADING' | 'ABOUT' | 'SECURITY' | 'HOW_IT_WORKS' | 'CONTACT';
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -84,6 +89,38 @@ export default function App() {
   const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
+  // Chat State
+  const [chatRoomCode, setChatRoomCode] = useState('');
+  const [chatPassword, setChatPassword] = useState('');
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [chatActiveRoom, setChatActiveRoom] = useState<any>(null);
+  const [chatJoined, setChatJoined] = useState(false);
+  const [chatNewMessage, setChatNewMessage] = useState('');
+  const [chatRoomId, setChatRoomId] = useState('');
+  const [dbStatus, setDbStatus] = useState<'CONNECTING' | 'ONLINE' | 'OFFLINE'>('CONNECTING');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const checkConnection = async () => {
+      try {
+        await getDoc(doc(db, '_status', 'connection'));
+        setDbStatus('ONLINE');
+      } catch (err: any) {
+        console.warn("DB Status Check:", err.message);
+        // If it's permission denied, it's technically online because it reached the server
+        if (err.message.includes('permission') || err.code === 'permission-denied') {
+          setDbStatus('ONLINE');
+        } else {
+          setDbStatus('OFFLINE');
+        }
+      }
+    };
+    checkConnection();
+    // Re-check periodically
+    const interval = setInterval(checkConnection, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   const passwordCriteria = useMemo(() => ({
     length: password.length >= 8,
     digit: /\d/.test(password),
@@ -102,14 +139,54 @@ export default function App() {
   }, [password, passwordCriteria]);
 
   const processFile = (file: File) => {
-    if (file.size > 600000) {
-      setError("Terminal Limit Reached: Shard exceeds 600KB secure threshold. Please compress or split your file.");
+    // 500KB limit to ensure the final encrypted & base64 encoded payload stays under Firestore's 1MB limit
+    if (file.size > 512000) {
+      setError("Protocol Size Limit: Shard exceeds 500KB limit. Please use a smaller file or photo to ensure secure transmission.");
       return;
     }
 
+    const resizeAndCompress = (dataUrl: string): Promise<string> => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          // Max dimension 1200px
+          const MAX_SIZE = 1200;
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Compress to 70% quality jpeg
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.src = dataUrl;
+      });
+    };
+
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64 = event.target?.result as string;
+    reader.onload = async (event) => {
+      let base64 = event.target?.result as string;
+      
+      if (file.type.startsWith('image/')) {
+        base64 = await resizeAndCompress(base64);
+      }
+
       setAttachedFile({
         name: file.name,
         type: file.type,
@@ -158,11 +235,15 @@ export default function App() {
       const hashParams = new URLSearchParams(hashPart);
       
       const id = params.get('s') || hashParams.get('s');
+      const chatRoom = params.get('c') || hashParams.get('c');
       
       if (id) {
-        // If we found it in search params, move it to hash for a cleaner URL and better routing
         window.history.replaceState(null, '', `/#s=${id}`);
         handleLoadSecret(id);
+      } else if (chatRoom) {
+        window.history.replaceState(null, '', `/#c=${chatRoom}`);
+        setChatRoomCode(chatRoom);
+        setViewState('CHAT');
       }
     };
 
@@ -253,8 +334,13 @@ export default function App() {
       setAutoCopied(true);
       setTimeout(() => setAutoCopied(false), 5000);
 
-    } catch (err) {
-      setError("Encryption Failure: Critical handshake error during vault transmission. Refresh and try again.");
+    } catch (err: any) {
+      console.error("Transmission Error:", err);
+      if (err?.message?.includes("too large") || err?.message?.includes("quota")) {
+        setError("Transmission Failure: Secret shard is too large for the vault. Try a smaller file or shorter message.");
+      } else {
+        setError("Encryption Failure: Critical handshake error during vault transmission. Refresh and try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -299,6 +385,147 @@ export default function App() {
     }
   };
 
+  // Chat Room Logic
+  const handleCreateChatRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatPassword) return;
+    
+    setLoading(true);
+    setError(null);
+    console.log("[PROTOCOL] Initializing Secure Chat Vault...");
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Transmission Timeout: Secure channel handshake exceeded 15s.")), 15000)
+    );
+
+    try {
+      console.log("[PROTOCOL] Step 1: Sequence Generation");
+      const id = nanoid(6).toUpperCase();
+      
+      console.log("[PROTOCOL] Step 2: Client-side Encryption");
+      const validatorString = "IDB_SECURE_VAULT_OPEN";
+      const { encryptedData, iv, salt } = await encryptMessage(validatorString, chatPassword);
+      
+      const expiresAt = new Date(Date.now() + 24 * 3600000); 
+
+      const roomData = {
+        roomCode: id,
+        encryptedValidator: encryptedData,
+        iv,
+        salt,
+        createdAt: serverTimestamp(),
+        expiresAt
+      };
+
+      console.log("[PROTOCOL] Step 3: Vault Deposition");
+      await Promise.race([
+        setDoc(doc(db, 'chatRooms', id), roomData),
+        timeoutPromise
+      ]);
+
+      console.log("[PROTOCOL] Step 4: Finalizing Handshake");
+      setChatRoomCode(id);
+      setChatActiveRoom(roomData);
+      setChatJoined(true);
+      console.log("[PROTOCOL] Uplink Secure:", id);
+    } catch (err: any) {
+      console.error("[CRITICAL FAILURE] Chat Vault Error:", err);
+      setError(err.message || "Vault Creation Error: Protocol failed during initialization.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoinChatRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatRoomCode || !chatPassword) return;
+    setLoading(true);
+    setError(null);
+    console.log("Attempting Authenticated Uplink...");
+    try {
+      const docRef = doc(db, 'chatRooms', chatRoomCode.toUpperCase().trim());
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const now = new Date();
+        const expiresAt = data.expiresAt?.toDate();
+        if (expiresAt && now > expiresAt) {
+          setError("Protocol Denied: This secure link has expired and was purged from our system.");
+          return;
+        }
+
+        // Validate password
+        try {
+          await decryptMessage(data.encryptedValidator, data.iv, data.salt, chatPassword);
+          setChatActiveRoom(data);
+          setChatJoined(true);
+          setChatRoomCode(data.roomCode);
+          console.log("Uplink Established.");
+        } catch (err) {
+          setError("Access Refused: Secure key mismatch. Protocol remains locked.");
+        }
+      } else {
+        setError("Uplink Error: Secure vault not found. Verify the sequence ID.");
+      }
+    } catch (err: any) {
+      console.error("Connection Failure:", err);
+      setError("Connection Error: Protocol handshake failed. Uplink unstable.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatNewMessage.trim() || !chatActiveRoom || !chatJoined) return;
+
+    try {
+      const { encryptedData, iv, salt } = await encryptMessage(chatNewMessage, chatPassword);
+      const messageId = nanoid();
+      const messageData = {
+        senderId: 'ANON-' + nanoid(4),
+        encryptedText: encryptedData,
+        iv,
+        salt,
+        timestamp: serverTimestamp()
+      };
+
+      const messagesRef = doc(db, 'chatRooms', chatActiveRoom.roomCode, 'messages', messageId);
+      await setDoc(messagesRef, messageData);
+      setChatNewMessage('');
+    } catch (err) {
+      setError("Transmission Error: Failed to sync message across secure channel.");
+    }
+  };
+
+  useEffect(() => {
+    if (chatJoined && chatActiveRoom) {
+      const messagesRef = collection(db, 'chatRooms', chatActiveRoom.roomCode, 'messages');
+      const q = query(messagesRef, orderBy('timestamp', 'asc'), limit(50));
+
+      const unsubscribe = onSnapshot(q, async (snapshot: any) => {
+        const msgs = await Promise.all(snapshot.docs.map(async (doc: any) => {
+          const data = doc.data();
+          try {
+            // Use message-specific salt
+            const dec = await decryptMessage(data.encryptedText, data.iv, data.salt, chatPassword);
+            return { id: doc.id, ...data, text: dec };
+          } catch (e) {
+            return { id: doc.id, ...data, text: "[DECRYPTION ERROR: SECURITY SHIELD ACTIVE]" };
+          }
+        }));
+        setChatMessages(msgs);
+        setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      }, (err: any) => {
+        console.error("Snapshot error:", err);
+        setError("Sync Failure: Lost connection to secure vault.");
+      });
+
+      return () => unsubscribe();
+    }
+  }, [chatJoined, chatActiveRoom, chatPassword]);
+
   const copyToClipboard = async (type: 'link' | 'invite' | 'share' | 'id' = 'link') => {
     const currentOrigin = window.location.origin;
     const cleanBase = currentOrigin.replace(/\/$/, '');
@@ -334,6 +561,7 @@ export default function App() {
   const reset = () => {
     window.history.pushState({}, '', window.location.pathname);
     setViewState('LANDING');
+    setLoading(false); // Reset loading
     setTask('');
     setMessage('');
     setPassword('');
@@ -356,7 +584,11 @@ export default function App() {
 
   const NavItem = ({ label, target, num }: { label: string, target: ViewState, num: string }) => (
     <button 
-      onClick={() => setViewState(target)}
+      onClick={() => {
+        setViewState(target);
+        setLoading(false); // Clear loading on navigation
+        setError(null);   // Clear error on navigation
+      }}
       className={`group flex items-center gap-4 py-3 border-b border-foreground/5 w-full text-left transition-all ${viewState === target ? 'opacity-100' : 'opacity-30 hover:opacity-100'}`}
     >
       <span className="text-[10px] font-mono font-bold">{num}</span>
@@ -388,10 +620,11 @@ export default function App() {
            <NavItem num="01" label="Protocol Home" target="LANDING" />
            <NavItem num="02" label="New Message" target="CREATE" />
            <NavItem num="03" label="See My Message" target="DISCOVER" />
-           <NavItem num="04" label="How it works" target="HOW_IT_WORKS" />
-           <NavItem num="05" label="Security" target="SECURITY" />
-           <NavItem num="06" label="Info" target="ABOUT" />
-           <NavItem num="07" label="Contact" target="CONTACT" />
+           <NavItem num="04" label="Temporary Chat" target="CHAT" />
+           <NavItem num="05" label="How it works" target="HOW_IT_WORKS" />
+           <NavItem num="06" label="Security" target="SECURITY" />
+           <NavItem num="07" label="Info" target="ABOUT" />
+           <NavItem num="08" label="Contact" target="CONTACT" />
         </nav>
 
         <div className="p-4 bg-foreground text-background flex items-center justify-between">
@@ -515,7 +748,7 @@ export default function App() {
                       className={`border-4 border-foreground border-dashed p-4 flex flex-col gap-4 transition-all ${isDragOver ? 'bg-neon/20 scale-[1.02]' : 'bg-background/50'}`}
                     >
                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-black uppercase italic opacity-40">Secure Attachment (Max 600KB)</span>
+                          <span className="text-[10px] font-black uppercase italic opacity-40">Secure Attachment (Max 500KB)</span>
                           {attachedFile && (
                             <button 
                               type="button" 
@@ -611,24 +844,6 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Password Strength Meter */}
-                      <div className="md:col-span-2 space-y-1">
-                        <div className="h-1.5 w-full bg-foreground/10 overflow-hidden">
-                          <motion.div 
-                            initial={{ width: 0 }}
-                            animate={{ 
-                              width: `${passwordStrength}%`,
-                              backgroundColor: passwordStrength < 40 ? '#ef4444' : passwordStrength < 80 ? '#eab308' : '#00ff00' 
-                            }}
-                            className="h-full transition-all duration-500"
-                          />
-                        </div>
-                        <div className="flex justify-between text-[8px] font-black uppercase tracking-tighter opacity-40 italic">
-                          <span>Entropy: {Math.round(passwordStrength)}%</span>
-                          <span>Status: {passwordStrength === 0 ? 'Awaiting Data' : passwordStrength < 40 ? 'Vulnerable' : passwordStrength < 80 ? 'Developing' : 'Secure Shard'}</span>
-                        </div>
-                      </div>
-
                       <div className="md:col-span-2 flex flex-wrap gap-4 pt-2">
                         <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.length ? 'text-neon' : 'opacity-30'}`}>
                           <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.length ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
@@ -679,7 +894,6 @@ export default function App() {
                  </form>
               </motion.div>
             )}
-
             {viewState === 'DISCOVER' && (
               <motion.div key="discover" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
                  <div className="space-y-2">
@@ -713,6 +927,143 @@ export default function App() {
                       Passwords are the critical factor. If you enter the correct ID but the wrong password, the data remains scrambled. Ensure you have the exact credentials before attempting retrieval.
                     </p>
                  </div>
+              </motion.div>
+            )}
+
+            {viewState === 'CHAT' && (
+              <motion.div key="chat" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
+                 {!chatJoined ? (
+                   <div className="space-y-12">
+                      <div className="space-y-2 flex justify-between items-start">
+                        <div>
+                          <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Join Room.</h2>
+                          <p className="font-medium opacity-50 uppercase text-[10px] tracking-widest">Temporary 24h Secure Chat Protocol.</p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          <div className={`flex items-center gap-2 px-3 py-1 border ${dbStatus === 'ONLINE' ? 'border-neon text-neon' : 'border-red-500 text-red-500'} text-[8px] font-black uppercase tracking-widest`}>
+                            <div className={`w-1.5 h-1.5 rounded-full ${dbStatus === 'ONLINE' ? 'bg-neon animate-pulse' : 'bg-red-500'} shadow-[0_0_8px_currentColor]`} />
+                            {dbStatus}
+                          </div>
+                          {!window.isSecureContext && (
+                            <div className="text-[7px] text-red-500 font-black uppercase italic">Unsecured Environment: Crypto Disabled</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                         <div className="space-y-6">
+                            <h3 className="text-xl font-black uppercase italic text-neon">Create New Room</h3>
+                            <form onSubmit={handleCreateChatRoom} className="space-y-4">
+                               <Input 
+                                 type="password"
+                                 placeholder="SET ROOM PASSWORD"
+                                 value={chatPassword}
+                                 onChange={(e) => setChatPassword(e.target.value)}
+                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase"
+                                 required
+                               />
+                               <Button type="submit" disabled={loading || dbStatus === 'OFFLINE'} className="w-full h-16 bg-foreground text-background hover:bg-neon hover:text-black font-black uppercase rounded-none transition-all disabled:opacity-50">
+                                  {loading ? 'Transmitting...' : 'Initialize Protocol'}
+                               </Button>
+                            </form>
+                         </div>
+
+                         <div className="space-y-6">
+                            <h3 className="text-xl font-black uppercase italic text-neon">Join Existing Room</h3>
+                            <form onSubmit={handleJoinChatRoom} className="space-y-4">
+                               <Input 
+                                 placeholder="ROOM CODE (E.G. XJ7K2P)"
+                                 value={chatRoomCode}
+                                 onChange={(e) => setChatRoomCode(e.target.value.toUpperCase())}
+                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase tracking-widest"
+                                 required
+                               />
+                               <Input 
+                                 type="password"
+                                 placeholder="ROOM PASSWORD"
+                                 value={chatPassword}
+                                 onChange={(e) => setChatPassword(e.target.value)}
+                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase"
+                                 required
+                               />
+                               <Button type="submit" disabled={loading || dbStatus === 'OFFLINE'} className="w-full h-16 bg-foreground text-background hover:bg-neon hover:text-black font-black uppercase rounded-none transition-all disabled:opacity-50">
+                                  {loading ? 'Authenticating...' : 'Authenticate Uplink'}
+                               </Button>
+                            </form>
+                         </div>
+                      </div>
+                   </div>
+                 ) : (
+                   <div className="flex flex-col h-[70vh] border-4 border-foreground bg-background relative">
+                      <div className="p-4 bg-foreground text-background flex justify-between items-center shrink-0">
+                         <div className="flex flex-col">
+                            <span className="text-[8px] font-black uppercase opacity-50">Secure Chat Channel</span>
+                            <span className="text-lg font-display tracking-widest uppercase">Room: {chatActiveRoom.roomCode}</span>
+                         </div>
+                         <div className="flex gap-4">
+                            <Button variant="ghost" size="icon" onClick={() => {
+                               navigator.clipboard.writeText(`${window.location.origin}/#c=${chatActiveRoom.roomCode}`);
+                               setCopied(true);
+                               setTimeout(() => setCopied(false), 2000);
+                            }} className="h-8 w-8 hover:text-neon">
+                               {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => {
+                               setChatJoined(false);
+                               setChatActiveRoom(null);
+                               setChatMessages([]);
+                               setChatPassword('');
+                               setChatRoomCode('');
+                            }} className="h-8 w-8 hover:text-red-500">
+                               <X className="w-4 h-4" />
+                            </Button>
+                         </div>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto p-6 space-y-4 font-mono scrollbar-hide">
+                         {chatMessages.length === 0 && (
+                            <div className="flex flex-col items-center justify-center h-full opacity-20 italic">
+                               <Lock className="w-12 h-12 mb-4" />
+                               <p className="text-[10px] font-black uppercase">Channel Secured. Waiting for messages...</p>
+                            </div>
+                         )}
+                         {chatMessages.map((msg, i) => (
+                           <motion.div 
+                             initial={{ opacity: 0, x: -10 }}
+                             animate={{ opacity: 1, x: 0 }}
+                             key={msg.id || i} 
+                             className="flex flex-col gap-1 border-l-2 border-foreground/10 pl-4 py-1"
+                           >
+                              <div className="flex items-center gap-4">
+                                 <span className="text-[9px] font-black uppercase text-neon">{msg.senderId}</span>
+                                 <span className="text-[7px] opacity-30 uppercase">{msg.timestamp?.toDate().toLocaleTimeString()}</span>
+                              </div>
+                              <p className="text-sm leading-relaxed">{msg.text}</p>
+                           </motion.div>
+                         ))}
+                         <div ref={chatBottomRef} />
+                      </div>
+
+                      <div className="p-4 border-t-2 border-foreground/10 shrink-0">
+                         <form onSubmit={handleSendChatMessage} className="flex gap-2">
+                            <Input 
+                              placeholder="TRANSMIT SECURE DATA..."
+                              value={chatNewMessage}
+                              onChange={(e) => setChatNewMessage(e.target.value)}
+                              className="h-16 border-2 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase text-xs"
+                            />
+                            <Button type="submit" className="h-16 w-16 bg-foreground text-background hover:bg-neon hover:text-black shrink-0 transition-all">
+                               <Send className="w-6 h-6" />
+                            </Button>
+                         </form>
+                      </div>
+
+                      <div className="absolute bottom-[-24px] right-0 flex items-center gap-2">
+                         <div className="w-2 h-2 bg-neon rounded-full animate-pulse shadow-[0_0_8px_#00FF00]" />
+                         <span className="text-[8px] font-black uppercase opacity-40">End-to-End Encrypted Tunnel</span>
+                      </div>
+                   </div>
+                 )}
               </motion.div>
             )}
 
