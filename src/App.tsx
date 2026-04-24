@@ -99,15 +99,6 @@ export default function App() {
     return score;
   }, [password, passwordCriteria]);
 
-  const passwordStrength = useMemo(() => {
-    if (!password) return 0;
-    let score = 0;
-    if (passwordCriteria.length) score += 33.3;
-    if (passwordCriteria.digit) score += 33.3;
-    if (passwordCriteria.special) score += 33.4;
-    return score;
-  }, [password, passwordCriteria]);
-
   const processFile = (file: File) => {
     if (file.size > 600000) {
       setError("Terminal Limit Reached: Shard exceeds 600KB secure threshold. Please compress or split your file.");
@@ -528,6 +519,7 @@ export default function App() {
                             <input 
                               ref={fileInputRef}
                               type="file" 
+                              accept="image/*,application/pdf,text/plain,.doc,.docx"
                               onChange={handleFileChange}
                               className="hidden"
                             />
@@ -839,24 +831,49 @@ export default function App() {
 
                 {/* Secure Attachment Reveal */}
                 {retrieveData?.attachedFile && (
-                  <div className="p-8 border-4 border-foreground bg-accent/20 flex flex-col md:flex-row items-center justify-between gap-6">
-                    <div className="flex items-center gap-6">
-                       <div className="w-16 h-16 bg-foreground text-background flex items-center justify-center">
-                          <FileText className="w-8 h-8 text-neon" />
-                       </div>
-                       <div className="flex flex-col">
-                          <span className="text-[10px] font-black uppercase opacity-40">Attached Protocol Shard</span>
-                          <span className="text-xl font-black uppercase truncate max-w-[200px]">{retrieveData.attachedFile.name}</span>
-                       </div>
+                  <div className="p-8 border-4 border-foreground bg-accent/20 space-y-6">
+                    <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                      <div className="flex items-center gap-6">
+                         <div className="w-16 h-16 bg-foreground text-background flex items-center justify-center shrink-0">
+                            {retrieveData.attachedFile.type?.startsWith('image/') ? (
+                              <img 
+                                src={retrieveData.attachedFile.data} 
+                                alt="Secret Attachment" 
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <FileText className="w-8 h-8 text-neon" />
+                            )}
+                         </div>
+                         <div className="flex flex-col overflow-hidden">
+                            <span className="text-[10px] font-black uppercase opacity-40">Attached Protocol Shard</span>
+                            <span className="text-xl font-black uppercase truncate max-w-[200px] md:max-w-md">{retrieveData.attachedFile.name}</span>
+                            <span className="text-[9px] font-mono opacity-60 uppercase">{retrieveData.attachedFile.type}</span>
+                         </div>
+                      </div>
+                      <a 
+                        href={retrieveData.attachedFile.data} 
+                        download={retrieveData.attachedFile.name}
+                        className="h-16 px-10 bg-neon text-black font-black uppercase text-sm flex items-center gap-3 hover:bg-white transition-all shadow-[8px_8px_0px_0px_var(--color-foreground)] active:shadow-none active:translate-x-1 active:translate-y-1 w-full md:w-auto justify-center"
+                      >
+                        <Download className="w-5 h-5" />
+                        Retrieve File
+                      </a>
                     </div>
-                    <a 
-                      href={retrieveData.attachedFile.data} 
-                      download={retrieveData.attachedFile.name}
-                      className="h-16 px-10 bg-neon text-black font-black uppercase text-sm flex items-center gap-3 hover:bg-white transition-all shadow-[8px_8px_0px_0px_var(--color-foreground)] active:shadow-none active:translate-x-1 active:translate-y-1"
-                    >
-                      <Download className="w-5 h-5" />
-                      Retrieve File
-                    </a>
+
+                    {retrieveData.attachedFile.type?.startsWith('image/') && (
+                      <div className="border-2 border-foreground/10 p-2 bg-black/5">
+                        <img 
+                          src={retrieveData.attachedFile.data} 
+                          alt="Decrypted Attachment" 
+                          className="max-h-[500px] w-auto mx-auto object-contain cursor-zoom-in"
+                          onClick={() => window.open(retrieveData.attachedFile.data, '_blank')}
+                          referrerPolicy="no-referrer"
+                        />
+                        <p className="text-[8px] text-center mt-2 opacity-30 font-black uppercase tracking-widest">End-to-End Decrypted Visual Asset</p>
+                      </div>
+                    )}
                   </div>
                 )}
 

@@ -1,6 +1,6 @@
 {
   "name": "IDB Secret Message",
-  "description": "Secure, encrypted secret messages with view limits and password protection. Minimalist black & white design.",
+  "description": "Secure, end-to-end encrypted messaging with self-destructing text and files. Supports photo uploads, view limits, and zero-knowledge protection in a sharp minimalist UI.",
   "requestFramePermissions": [
     "clipboard-read",
     "clipboard-write"
