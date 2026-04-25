@@ -1,116 +1,97 @@
 /**
- * encryption/decryption utilities using Web Crypto API
+ * SECURE CRYPTOGRAPHIC PROTOCOLS
+ * END-TO-END ENCRYPTION VIA AES-GCM 256
  */
 
-const ITERATIONS = 100000;
-const KEY_LENGTH = 256;
+const DEFAULT_ITERATIONS = 100000;
+const KEY_LEN = 256;
+const ALGO = 'AES-GCM';
 
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-export async function encryptMessage(message: string, password: string) {
-  if (!window.crypto || !window.crypto.subtle) {
-    throw new Error("Web Crypto API not available. Protocol requires a secure (HTTPS) environment.");
-  }
+/**
+ * Derives a cryptographic key from a password and salt.
+ */
+async function deriveKey(password: string, salt: Uint8Array, iterations: number = DEFAULT_ITERATIONS) {
   const enc = new TextEncoder();
-  const salt = window.crypto.getRandomValues(new Uint8Array(16));
-  const iv = window.crypto.getRandomValues(new Uint8Array(12));
-
   const passwordKey = await window.crypto.subtle.importKey(
     'raw',
     enc.encode(password),
-    'PBKDF2',
+    { name: 'PBKDF2' },
     false,
     ['deriveKey']
   );
 
-  const aesKey = await window.crypto.subtle.deriveKey(
+  return window.crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt,
-      iterations: ITERATIONS,
-      hash: 'SHA-256',
+      iterations: iterations,
+      hash: 'SHA-256'
     },
     passwordKey,
-    { name: 'AES-GCM', length: KEY_LENGTH },
+    { name: ALGO, length: KEY_LEN },
     false,
-    ['encrypt']
+    ['encrypt', 'decrypt']
   );
+}
 
-  const encryptedContent = await window.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    aesKey,
+/**
+ * Encrypts a message string using a password.
+ * Returns { encryptedData: base64, iv: base64, salt: base64, iterations }
+ */
+export async function encryptMessage(message: string, password: string, iterations: number = DEFAULT_ITERATIONS) {
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error("SECURE_CONTEXT_REQUIRED: Web Crypto API is unavailable.");
+  }
+
+  const enc = new TextEncoder();
+  const salt = window.crypto.getRandomValues(new Uint8Array(16));
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  
+  const key = await deriveKey(password, salt, iterations);
+  
+  const encrypted = await window.crypto.subtle.encrypt(
+    { name: ALGO, iv },
+    key,
     enc.encode(message)
   );
 
   return {
-    encryptedData: uint8ArrayToBase64(new Uint8Array(encryptedContent)),
-    iv: uint8ArrayToBase64(iv),
-    salt: uint8ArrayToBase64(salt),
+    encryptedData: btoa(String.fromCharCode(...new Uint8Array(encrypted))),
+    iv: btoa(String.fromCharCode(...salt)),
+    salt: btoa(String.fromCharCode(...salt)),
+    ivBase64: btoa(String.fromCharCode(...iv)),
+    iterations
   };
 }
 
+/**
+ * Decrypts a base64 message using a password, salt, and iv.
+ */
 export async function decryptMessage(
   encryptedDataB64: string,
   ivB64: string,
   saltB64: string,
-  password: string
+  password: string,
+  iterations: number = DEFAULT_ITERATIONS
 ) {
   if (!window.crypto || !window.crypto.subtle) {
-    throw new Error("Web Crypto API not available. Protocol requires a secure (HTTPS) environment.");
+    throw new Error("SECURE_CONTEXT_REQUIRED: Web Crypto API is unavailable.");
   }
-  const enc = new TextEncoder();
-  const dec = new TextDecoder();
 
-  const encryptedData = base64ToUint8Array(encryptedDataB64);
-  const iv = base64ToUint8Array(ivB64);
-  const salt = base64ToUint8Array(saltB64);
+  const salt = new Uint8Array(atob(saltB64).split('').map(c => c.charCodeAt(0)));
+  const iv = new Uint8Array(atob(ivB64).split('').map(c => c.charCodeAt(0)));
+  const data = new Uint8Array(atob(encryptedDataB64).split('').map(c => c.charCodeAt(0)));
 
-  const passwordKey = await window.crypto.subtle.importKey(
-    'raw',
-    enc.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
-
-  const aesKey = await window.crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations: ITERATIONS,
-      hash: 'SHA-256',
-    },
-    passwordKey,
-    { name: 'AES-GCM', length: KEY_LENGTH },
-    false,
-    ['decrypt']
-  );
+  const key = await deriveKey(password, salt, iterations);
 
   try {
-    const decryptedContent = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
-      aesKey,
-      encryptedData
+    const decrypted = await window.crypto.subtle.decrypt(
+      { name: ALGO, iv },
+      key,
+      data
     );
-    return dec.decode(decryptedContent);
+    return new TextDecoder().decode(decrypted);
   } catch (e) {
-    throw new Error('Invalid password or corrupted data');
+    throw new Error("DECRYPTION_FAILED: Invalid key or corrupted data shard.");
   }
 }

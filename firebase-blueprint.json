@@ -1,60 +1,62 @@
 {
   "entities": {
-    "Secret": {
-      "title": "Secret",
-      "description": "An encrypted secret message with view controls",
-      "type": "object",
-      "properties": {
-        "encryptedData": { "type": "string", "description": "AES-encrypted message blob" },
-        "iv": { "type": "string", "description": "Initialization vector" },
-        "salt": { "type": "string", "description": "PBKDF2 salt" },
-        "viewLimit": { "type": "number", "description": "Max number of views allowed" },
-        "viewCount": { "type": "number", "description": "Current number of times viewed" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "expiresAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["encryptedData", "iv", "salt", "viewLimit", "viewCount", "createdAt"]
-    },
     "ChatRoom": {
-      "title": "ChatRoom",
-      "description": "A temporary secure chat session (24h protocol)",
+      "title": "Chat Room",
+      "description": "A temporary secure chat shard.",
       "type": "object",
       "properties": {
         "roomCode": { "type": "string" },
-        "encryptedValidator": { "type": "string", "description": "Verification shard to check password" },
+        "encryptedValidator": { "type": "string" },
         "iv": { "type": "string" },
         "salt": { "type": "string" },
+        "iterations": { "type": "number", "description": "PBKDF2 iteration count" },
         "createdAt": { "type": "string", "format": "date-time" },
         "expiresAt": { "type": "string", "format": "date-time" }
       },
       "required": ["roomCode", "encryptedValidator", "iv", "salt", "createdAt", "expiresAt"]
     },
+    "TypingStatus": {
+      "title": "Typing Status",
+      "description": "Indicates if a user is currently typing.",
+      "type": "object",
+      "properties": {
+        "isTyping": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["isTyping", "updatedAt"]
+    },
     "ChatMessage": {
-      "title": "ChatMessage",
-      "description": "An encrypted message within a chat room",
+      "title": "Chat Message",
+      "description": "An encrypted message packet.",
       "type": "object",
       "properties": {
         "senderId": { "type": "string" },
         "encryptedText": { "type": "string" },
         "iv": { "type": "string" },
         "salt": { "type": "string" },
-        "timestamp": { "type": "string", "format": "date-time" }
+        "iterations": { "type": "number", "description": "PBKDF2 iteration count used for this packet" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "reactions": { 
+          "type": "object", 
+          "description": "Map of emoji to user ID lists",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+        }
       },
       "required": ["senderId", "encryptedText", "iv", "salt", "timestamp"]
     }
   },
   "firestore": {
-    "/secrets/{secretId}": {
-      "schema": "Secret",
-      "description": "Secure storage for encrypted messages"
-    },
-    "/chatRooms/{roomId}": {
+    "/chatRooms/{roomCode}": {
       "schema": "ChatRoom",
-      "description": "Metadata for a chat session"
+      "description": "Root room document"
     },
-    "/chatRooms/{roomId}/messages/{messageId}": {
+    "/chatRooms/{roomCode}/typing/{userId}": {
+      "schema": "TypingStatus",
+      "description": "Real-time typing indicator for a user"
+    },
+    "/chatRooms/{roomCode}/messages/{messageId}": {
       "schema": "ChatMessage",
-      "description": "Individual messages in a room"
+      "description": "Encrypted message packets"
     }
   }
 }

@@ -1,1473 +1,954 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import { 
   Lock, 
+  Unlock, 
   Send, 
-  Copy, 
-  Check, 
+  Shield, 
+  Settings, 
+  Trash2, 
+  Image as ImageIcon, 
+  File, 
+  X, 
+  Terminal, 
   Eye, 
   EyeOff, 
-  RefreshCcw, 
-  Trash2, 
-  ShieldCheck,
-  AlertCircle,
-  Key as KeyIcon,
-  Unlock,
-  Link,
-  ChevronRight,
-  Share2,
-  Moon,
-  Sun,
   Upload,
-  FileText,
-  X,
-  Download,
-  MessageCircle
+  Plus,
+  ArrowRight,
+  RefreshCw,
+  Monitor,
+  Zap,
+  Fingerprint,
+  Smile,
+  Sun,
+  Moon
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
-import { db } from './lib/firebase';
+import { motion, AnimatePresence } from 'framer-motion';
+import { nanoid } from 'nanoid';
 import { 
   doc, 
-  getDoc, 
   setDoc, 
-  updateDoc, 
-  increment,
+  getDoc, 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  limit, 
   serverTimestamp,
-  collection,
-  query,
-  orderBy,
-  onSnapshot,
-  limit
+  deleteDoc,
+  getDocs,
+  updateDoc
 } from 'firebase/firestore';
+import { db } from './lib/firebase';
 import { encryptMessage, decryptMessage } from './lib/crypto';
-import { nanoid } from 'nanoid';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 
-// Branding constants
-const APP_NAME = "IDB SECRET MESSAGE";
-const PUBLIC_BASE_URL = "https://ais-pre-dmeg54kczs4raume2zyf4x-298283305183.europe-west1.run.app";
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
-type ViewState = 'LANDING' | 'CREATE' | 'DISCOVER' | 'CHAT' | 'SUCCESS' | 'RETRIEVE' | 'REVEALED' | 'EXPIRED' | 'ERROR' | 'LOADING' | 'ABOUT' | 'SECURITY' | 'HOW_IT_WORKS' | 'CONTACT';
+// TYPES
+type ViewState = 'LANDING' | 'CREATE' | 'JOIN' | 'CHAT';
+type Theme = 'NEON' | 'AMBER' | 'CRIMSON' | 'PHANTOM';
+type BubbleStyle = 'SHARP' | 'ROUNDED' | 'MINIMAL';
+
+interface Message {
+  id: string;
+  senderId: string;
+  encryptedText: string;
+  iv: string;
+  salt: string;
+  iterations?: number;
+  timestamp: any;
+  text?: string;
+  file?: {
+    name: string;
+    type: string;
+    data: string;
+  };
+  reactions?: Record<string, string[]>;
+}
+
+interface ChatRoom {
+  roomCode: string;
+  encryptedValidator: string;
+  iv: string;
+  salt: string;
+  iterations?: number;
+  createdAt: any;
+  expiresAt: any;
+}
+
+// COMPONENT: Button
+const Button = ({ 
+  children, 
+  className, 
+  variant = 'primary', 
+  ...props 
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) => {
+  const base = "btn-brutal relative overflow-hidden font-mono tracking-widest text-[10px]";
+  const variants = {
+    primary: "bg-foreground text-background hover:bg-neon hover:text-background",
+    secondary: "bg-accent text-foreground hover:border-neon",
+    ghost: "border-none hover:text-neon p-2",
+    danger: "bg-red-900/20 text-red-500 border-red-500 hover:bg-red-500 hover:text-white"
+  };
+  
+  return (
+    <button className={cn(base, variants[variant], className)} {...props}>
+      <span className="relative z-10 flex items-center justify-center gap-2">
+        {children}
+      </span>
+    </button>
+  );
+};
+
+// COMPONENT: Input
+const Input = ({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) => (
+  <input 
+    className={cn("input-brutal font-mono text-[11px] placeholder:opacity-30", className)} 
+    {...props} 
+  />
+);
 
 export default function App() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // NAVIGATION & UI
   const [viewState, setViewState] = useState<ViewState>('LANDING');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isDark, setIsDark] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return document.documentElement.classList.contains('dark') || 
-             localStorage.getItem('theme') === 'dark';
-    }
-    return false;
-  });
-
-  // Dark Mode effect
-  useEffect(() => {
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
-  }, [isDark]);
-
-  // Creation State
-  const [task, setTask] = useState('');
-  const [message, setMessage] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  
+  // SESSION DATA
   const [password, setPassword] = useState('');
-  const [viewLimit, setViewLimit] = useState(1);
-  const [expiryHours, setExpiryHours] = useState(24);
-  const [generatedId, setGeneratedId] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [autoCopied, setAutoCopied] = useState(false);
-  const [showCreatePassword, setShowCreatePassword] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [roomCode, setRoomCode] = useState('');
+  const [activeRoom, setActiveRoom] = useState<ChatRoom | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [attachedFile, setAttachedFile] = useState<{ name: string, type: string, data: string } | null>(null);
+  const [userId] = useState(() => 'AGENT-' + nanoid(4).toUpperCase());
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
 
-  // Chat State
-  const [chatRoomCode, setChatRoomCode] = useState('');
-  const [chatPassword, setChatPassword] = useState('');
-  const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [chatActiveRoom, setChatActiveRoom] = useState<any>(null);
-  const [chatJoined, setChatJoined] = useState(false);
-  const [chatNewMessage, setChatNewMessage] = useState('');
-  const [chatRoomId, setChatRoomId] = useState('');
-  const [dbStatus, setDbStatus] = useState<'CONNECTING' | 'ONLINE' | 'OFFLINE'>('CONNECTING');
+  // SETTINGS
+  const [theme, setTheme] = useState<Theme>('NEON');
+  const [bubbleStyle, setBubbleStyle] = useState<BubbleStyle>('SHARP');
+  const [showTimestamps, setShowTimestamps] = useState(true);
+  const [showEntropy, setShowEntropy] = useState(true);
+  const [pbkdf2Iterations, setPbkdf2Iterations] = useState(100000);
+  const [showAdvancedSecurity, setShowAdvancedSecurity] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(true);
+
+  // UTILS
   const chatBottomRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
-    const checkConnection = async () => {
-      try {
-        await getDoc(doc(db, '_status', 'connection'));
-        setDbStatus('ONLINE');
-      } catch (err: any) {
-        console.warn("DB Status Check:", err.message);
-        // If it's permission denied, it's technically online because it reached the server
-        if (err.message.includes('permission') || err.code === 'permission-denied') {
-          setDbStatus('ONLINE');
-        } else {
-          setDbStatus('OFFLINE');
-        }
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, typingUsers]);
+
+  // Apply Light/Dark Class
+  useEffect(() => {
+    if (isDarkMode) {
+      document.body.classList.remove('light');
+    } else {
+      document.body.classList.add('light');
+    }
+  }, [isDarkMode]);
+
+  const themes = {
+    NEON: { 
+      primary: isDarkMode ? 'text-green-400' : 'text-green-600', 
+      border: isDarkMode ? 'border-green-400/50' : 'border-green-600', 
+      bg: isDarkMode ? 'bg-green-400/50' : 'bg-green-600', 
+      shadow: isDarkMode ? 'shadow-[0_0_10px_rgba(74,222,128,0.2)]' : 'shadow-[0_0_10px_rgba(22,163,74,0.3)]' 
+    },
+    AMBER: { 
+      primary: isDarkMode ? 'text-amber-400' : 'text-amber-500', 
+      border: isDarkMode ? 'border-amber-400/50' : 'border-amber-500', 
+      bg: isDarkMode ? 'bg-amber-400/50' : 'bg-amber-500', 
+      shadow: isDarkMode ? 'shadow-[0_0_10px_rgba(251,191,36,0.2)]' : 'shadow-[0_0_10px_rgba(245,158,11,0.3)]' 
+    },
+    CRIMSON: { 
+      primary: isDarkMode ? 'text-red-400' : 'text-red-600', 
+      border: isDarkMode ? 'border-red-400/50' : 'border-red-600', 
+      bg: isDarkMode ? 'bg-red-400/50' : 'bg-red-600', 
+      shadow: isDarkMode ? 'shadow-[0_0_10px_rgba(248,113,113,0.2)]' : 'shadow-[0_0_10px_rgba(220,38,38,0.3)]' 
+    },
+    PHANTOM: { 
+      primary: isDarkMode ? 'text-cyan-400' : 'text-cyan-500', 
+      border: isDarkMode ? 'border-cyan-400/50' : 'border-cyan-500', 
+      bg: isDarkMode ? 'bg-cyan-400/50' : 'bg-cyan-500', 
+      shadow: isDarkMode ? 'shadow-[0_0_10px_rgba(34,211,238,0.2)]' : 'shadow-[0_0_10px_rgba(6,182,212,0.3)]' 
+    },
+  };
+
+  const currentTheme = themes[theme];
+
+  // TYPING LOGIC
+  useEffect(() => {
+    if (viewState === 'CHAT' && activeRoom && db) {
+      const typingRef = doc(db, 'chatRooms', activeRoom.roomCode, 'typing', userId);
+      
+      let typingTimeout: any;
+      if (newMessage.length > 0) {
+        setDoc(typingRef, { isTyping: true, updatedAt: serverTimestamp() }, { merge: true });
+        
+        typingTimeout = setTimeout(() => {
+          setDoc(typingRef, { isTyping: false, updatedAt: serverTimestamp() }, { merge: true });
+        }, 3000);
+      } else {
+        setDoc(typingRef, { isTyping: false, updatedAt: serverTimestamp() }, { merge: true });
       }
-    };
-    checkConnection();
-    // Re-check periodically
-    const interval = setInterval(checkConnection, 30000);
-    return () => clearInterval(interval);
-  }, []);
 
-  const passwordCriteria = useMemo(() => ({
-    length: password.length >= 8,
-    digit: /\d/.test(password),
-    special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
-  }), [password]);
+      return () => {
+        clearTimeout(typingTimeout);
+        if (activeRoom && db) {
+          setDoc(typingRef, { isTyping: false, updatedAt: serverTimestamp() }, { merge: true });
+        }
+      };
+    }
+  }, [newMessage, viewState, activeRoom, userId]);
 
-  const isPasswordValid = passwordCriteria.length && passwordCriteria.digit && passwordCriteria.special;
+  // LISTEN FOR TYPING
+  useEffect(() => {
+    if (viewState === 'CHAT' && activeRoom && db) {
+      const q = query(
+        collection(db, 'chatRooms', activeRoom.roomCode, 'typing')
+      );
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const typing = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() as any }))
+          .filter(u => u.id !== userId && u.isTyping && u.updatedAt?.toDate() > new Date(Date.now() - 10000))
+          .map(u => u.id);
+        setTypingUsers(typing);
+      });
+      
+      return () => unsubscribe();
+    }
+  }, [viewState, activeRoom, userId]);
 
-  const passwordStrength = useMemo(() => {
-    if (!password) return 0;
-    let score = 0;
-    if (passwordCriteria.length) score += 33.3;
-    if (passwordCriteria.digit) score += 33.3;
-    if (passwordCriteria.special) score += 33.4;
-    return score;
-  }, [password, passwordCriteria]);
-
-  const processFile = (file: File) => {
-    // 500KB limit to ensure the final encrypted & base64 encoded payload stays under Firestore's 1MB limit
-    if (file.size > 512000) {
-      setError("Protocol Size Limit: Shard exceeds 500KB limit. Please use a smaller file or photo to ensure secure transmission.");
+  // HANDLERS
+  const handleCreateRoom = async () => {
+    if (!password || password.length < 4) {
+      setError("SECURITY_POLICY: Access token must be at least 4 characters.");
       return;
     }
-
-    const resizeAndCompress = (dataUrl: string): Promise<string> => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-
-          // Max dimension 1200px
-          const MAX_SIZE = 1200;
-          if (width > height) {
-            if (width > MAX_SIZE) {
-              height *= MAX_SIZE / width;
-              width = MAX_SIZE;
-            }
-          } else {
-            if (height > MAX_SIZE) {
-              width *= MAX_SIZE / height;
-              height = MAX_SIZE;
-            }
-          }
-
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          
-          // Compress to 70% quality jpeg
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
-        };
-        img.src = dataUrl;
-      });
-    };
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      let base64 = event.target?.result as string;
+    
+    setLoading(true);
+    setError(null);
+    try {
+      const code = nanoid(6).toUpperCase();
+      const validator = "IDB_HANDSHAKE_VERIFIED";
+      const { encryptedData, ivBase64, salt, iterations } = await encryptMessage(validator, password, pbkdf2Iterations);
       
-      if (file.type.startsWith('image/')) {
-        base64 = await resizeAndCompress(base64);
-      }
+      const payload: ChatRoom = {
+        roomCode: code,
+        encryptedValidator: encryptedData,
+        iv: ivBase64,
+        salt: salt,
+        iterations: iterations,
+        createdAt: serverTimestamp(),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+      };
 
-      setAttachedFile({
-        name: file.name,
-        type: file.type,
-        data: base64
+      if (db) {
+        await setDoc(doc(db, 'chatRooms', code), payload);
+      }
+      
+      setActiveRoom(payload);
+      setRoomCode(code);
+      setViewState('CHAT');
+    } catch (err: any) {
+      setError("HANDSHAKE_ERROR: Failed to establish secure shard.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoinRoom = async () => {
+    if (!roomCode || !password) return;
+    
+    setLoading(true);
+    setError(null);
+    try {
+      const docRef = doc(db, 'chatRooms', roomCode.toUpperCase());
+      const docSnap = await getDoc(docRef);
+      
+      if (!docSnap.exists()) {
+        setError("SHARD_NOT_FOUND: Sequence ID does not exist in the decentralized matrix.");
+        return;
+      }
+      
+      const data = docSnap.data() as ChatRoom;
+      try {
+        await decryptMessage(data.encryptedValidator, data.iv, data.salt, password, data.iterations || 100000);
+        setActiveRoom(data);
+        setViewState('CHAT');
+      } catch {
+        setError("AUTHENTICATION_FAILURE: Secure key mismatch. Protocol rejected.");
+      }
+    } catch (err: any) {
+      setError("HANDSHAKE_ERROR: Network instability detected during uplink.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSend = async () => {
+    if ((!newMessage.trim() && !attachedFile) || !activeRoom) return;
+    
+    const textToSend = newMessage.trim();
+    setNewMessage('');
+    const fileToSend = attachedFile;
+    setAttachedFile(null);
+
+    try {
+      const payload = JSON.stringify({
+        text: textToSend,
+        file: fileToSend
       });
-    };
-    reader.readAsDataURL(file);
+      
+      const { encryptedData, ivBase64, salt, iterations } = await encryptMessage(payload, password, pbkdf2Iterations);
+      
+      const msgId = nanoid();
+      const msgData = {
+        senderId: userId,
+        encryptedText: encryptedData,
+        iv: ivBase64,
+        salt: salt,
+        iterations: iterations,
+        timestamp: serverTimestamp()
+      };
+
+      if (db) {
+        await setDoc(doc(db, 'chatRooms', activeRoom.roomCode, 'messages', msgId), msgData);
+      }
+    } catch (err) {
+      setError("TRANSMISSION_ERROR: Secure packet drop detected.");
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) processFile(file);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) processFile(file);
-  };
-
-  // Retrieval State
-  const [retrieveId, setRetrieveId] = useState('');
-  const [retrieveData, setRetrieveData] = useState<any>(null);
-  const [revealPassword, setRevealPassword] = useState('');
-  const [showRevealPassword, setShowRevealPassword] = useState(false);
-  const [decryptedMessage, setDecryptedMessage] = useState<string | null>(null);
-  const [manualIdInput, setManualIdInput] = useState('');
-
-  // Read URL on mount
-  useEffect(() => {
-    const checkUrl = () => {
-      const params = new URLSearchParams(window.location.search);
-      const hashPart = window.location.hash.includes('?') 
-        ? window.location.hash.split('?')[1] 
-        : window.location.hash.substring(1);
-      const hashParams = new URLSearchParams(hashPart);
-      
-      const id = params.get('s') || hashParams.get('s');
-      const chatRoom = params.get('c') || hashParams.get('c');
-      
-      if (id) {
-        window.history.replaceState(null, '', `/#s=${id}`);
-        handleLoadSecret(id);
-      } else if (chatRoom) {
-        window.history.replaceState(null, '', `/#c=${chatRoom}`);
-        setChatRoomCode(chatRoom);
-        setViewState('CHAT');
+    if (file) {
+      if (file.size > 800000) {
+        setError("PAYLOAD_OVERFLOW: File exceeds 800KB bandwidth limit.");
+        return;
       }
-    };
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setAttachedFile({
+          name: file.name,
+          type: file.type,
+          data: event.target?.result as string
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
-    checkUrl();
-    window.addEventListener('hashchange', checkUrl);
-    return () => window.removeEventListener('hashchange', checkUrl);
-  }, []);
+  const handleReaction = async (messageId: string, emoji: string) => {
+    if (!activeRoom || !db) return;
+    
+    const messageRef = doc(db, 'chatRooms', activeRoom.roomCode, 'messages', messageId);
+    const message = messages.find(m => m.id === messageId);
+    if (!message) return;
 
-  const handleLoadSecret = async (id: string) => {
-    setViewState('LOADING'); // Immediate feedback
-    setLoading(true);
-    setRetrieveId(id);
-    setError(null);
-    setManualIdInput('');
+    const currentReactions = message.reactions || {};
+    const users = currentReactions[emoji] || [];
+    
+    let newUsers;
+    if (users.includes(userId)) {
+      newUsers = users.filter(id => id !== userId);
+    } else {
+      newUsers = [...users, userId];
+    }
+
+    const updatedReactions = { ...currentReactions, [emoji]: newUsers };
     
     try {
-      const docRef = doc(db, 'secrets', id.trim());
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const now = new Date();
-        const expiresAt = data.expiresAt?.toDate();
-        const isExpired = expiresAt && now > expiresAt;
-
-        if (data.viewCount >= data.viewLimit || isExpired) {
-          setViewState('EXPIRED');
-        } else {
-          setRetrieveData(data);
-          setViewState('RETRIEVE');
-        }
-      } else {
-        setViewState('EXPIRED'); 
-      }
-    } catch (err: any) {
-      if (err.code === 'permission-denied') {
-        setViewState('EXPIRED');
-      } else {
-        setError(`Uplink Error: Protocol handshake failed. Re-verify your sequence ID or network status.`);
-        setViewState('DISCOVER');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCreateSecret = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!message || !password) return;
-
-    if (!isPasswordValid) {
-      setError("Security Violation: Credentials must satisfy all complexity filters (Green Indicators) before ignition.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const payload = JSON.stringify({
-        text: message,
-        file: attachedFile
-      });
-      const { encryptedData, iv, salt } = await encryptMessage(payload, password);
-      const id = nanoid(8).toUpperCase(); 
-      
-      const expiresAt = expiryHours > 0 ? new Date(Date.now() + expiryHours * 3600000) : null;
-
-      const secretData = {
-        task: task.trim(),
-        encryptedData,
-        iv,
-        salt,
-        viewLimit: Number(viewLimit),
-        viewCount: 0,
-        expiresAt: expiresAt,
-        createdAt: serverTimestamp(),
-      };
-
-      await setDoc(doc(db, 'secrets', id), secretData);
-      
-      setGeneratedId(id);
-      setViewState('SUCCESS');
-
-      // Auto-copy sequence
-      const url = `${window.location.origin.replace(/\/$/, '')}/#s=${id}`;
-      navigator.clipboard.writeText(url);
-      setAutoCopied(true);
-      setTimeout(() => setAutoCopied(false), 5000);
-
-    } catch (err: any) {
-      console.error("Transmission Error:", err);
-      if (err?.message?.includes("too large") || err?.message?.includes("quota")) {
-        setError("Transmission Failure: Secret shard is too large for the vault. Try a smaller file or shorter message.");
-      } else {
-        setError("Encryption Failure: Critical handshake error during vault transmission. Refresh and try again.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDecrypt = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!revealPassword || !retrieveData) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const decrypted = await decryptMessage(
-        retrieveData.encryptedData,
-        retrieveData.iv,
-        retrieveData.salt,
-        revealPassword
-      );
-
-      const docRef = doc(db, 'secrets', retrieveId);
-      await updateDoc(docRef, {
-        viewCount: increment(1)
-      });
-
-      try {
-        const parsed = JSON.parse(decrypted);
-        setDecryptedMessage(parsed.text);
-        if (parsed.file) {
-          setRetrieveData((prev: any) => ({ ...prev, attachedFile: parsed.file }));
-        }
-      } catch (e) {
-        // Fallback for old simple-string messages
-        setDecryptedMessage(decrypted);
-      }
-      setViewState('REVEALED');
-    } catch (err: any) {
-      setError("Decryption Refused: Access key mismatch. The protocol remains locked to protect data integrity.");
-      setRevealPassword('');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Chat Room Logic
-  const handleCreateChatRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatPassword) return;
-    
-    setLoading(true);
-    setError(null);
-    console.log("[PROTOCOL] Initializing Secure Chat Vault...");
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Transmission Timeout: Secure channel handshake exceeded 15s.")), 15000)
-    );
-
-    try {
-      console.log("[PROTOCOL] Step 1: Sequence Generation");
-      const id = nanoid(6).toUpperCase();
-      
-      console.log("[PROTOCOL] Step 2: Client-side Encryption");
-      const validatorString = "IDB_SECURE_VAULT_OPEN";
-      const { encryptedData, iv, salt } = await encryptMessage(validatorString, chatPassword);
-      
-      const expiresAt = new Date(Date.now() + 24 * 3600000); 
-
-      const roomData = {
-        roomCode: id,
-        encryptedValidator: encryptedData,
-        iv,
-        salt,
-        createdAt: serverTimestamp(),
-        expiresAt
-      };
-
-      console.log("[PROTOCOL] Step 3: Vault Deposition");
-      await Promise.race([
-        setDoc(doc(db, 'chatRooms', id), roomData),
-        timeoutPromise
-      ]);
-
-      console.log("[PROTOCOL] Step 4: Finalizing Handshake");
-      setChatRoomCode(id);
-      setChatActiveRoom(roomData);
-      setChatJoined(true);
-      console.log("[PROTOCOL] Uplink Secure:", id);
-    } catch (err: any) {
-      console.error("[CRITICAL FAILURE] Chat Vault Error:", err);
-      setError(err.message || "Vault Creation Error: Protocol failed during initialization.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleJoinChatRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatRoomCode || !chatPassword) return;
-    setLoading(true);
-    setError(null);
-    console.log("Attempting Authenticated Uplink...");
-    try {
-      const docRef = doc(db, 'chatRooms', chatRoomCode.toUpperCase().trim());
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const now = new Date();
-        const expiresAt = data.expiresAt?.toDate();
-        if (expiresAt && now > expiresAt) {
-          setError("Protocol Denied: This secure link has expired and was purged from our system.");
-          return;
-        }
-
-        // Validate password
-        try {
-          await decryptMessage(data.encryptedValidator, data.iv, data.salt, chatPassword);
-          setChatActiveRoom(data);
-          setChatJoined(true);
-          setChatRoomCode(data.roomCode);
-          console.log("Uplink Established.");
-        } catch (err) {
-          setError("Access Refused: Secure key mismatch. Protocol remains locked.");
-        }
-      } else {
-        setError("Uplink Error: Secure vault not found. Verify the sequence ID.");
-      }
-    } catch (err: any) {
-      console.error("Connection Failure:", err);
-      setError("Connection Error: Protocol handshake failed. Uplink unstable.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSendChatMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatNewMessage.trim() || !chatActiveRoom || !chatJoined) return;
-
-    try {
-      const { encryptedData, iv, salt } = await encryptMessage(chatNewMessage, chatPassword);
-      const messageId = nanoid();
-      const messageData = {
-        senderId: 'ANON-' + nanoid(4),
-        encryptedText: encryptedData,
-        iv,
-        salt,
-        timestamp: serverTimestamp()
-      };
-
-      const messagesRef = doc(db, 'chatRooms', chatActiveRoom.roomCode, 'messages', messageId);
-      await setDoc(messagesRef, messageData);
-      setChatNewMessage('');
+      await updateDoc(messageRef, { reactions: updatedReactions });
     } catch (err) {
-      setError("Transmission Error: Failed to sync message across secure channel.");
+      console.error("REACTION_FAILURE:", err);
     }
   };
 
+  // SUBSCRIBE TO MESSAGES
   useEffect(() => {
-    if (chatJoined && chatActiveRoom) {
-      const messagesRef = collection(db, 'chatRooms', chatActiveRoom.roomCode, 'messages');
-      const q = query(messagesRef, orderBy('timestamp', 'asc'), limit(50));
-
-      const unsubscribe = onSnapshot(q, async (snapshot: any) => {
-        const msgs = await Promise.all(snapshot.docs.map(async (doc: any) => {
-          const data = doc.data();
-          try {
-            // Use message-specific salt
-            const dec = await decryptMessage(data.encryptedText, data.iv, data.salt, chatPassword);
-            return { id: doc.id, ...data, text: dec };
-          } catch (e) {
-            return { id: doc.id, ...data, text: "[DECRYPTION ERROR: SECURITY SHIELD ACTIVE]" };
-          }
-        }));
-        setChatMessages(msgs);
-        setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-      }, (err: any) => {
-        console.error("Snapshot error:", err);
-        setError("Sync Failure: Lost connection to secure vault.");
+    if (viewState === 'CHAT' && activeRoom && db) {
+      const q = query(
+        collection(db, 'chatRooms', activeRoom.roomCode, 'messages'),
+        orderBy('timestamp', 'asc'),
+        limit(100)
+      );
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const newMsgs = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as Message));
+        
+        // Decrypt matches asynchronously
+        const decryptAll = async () => {
+          const decrypted = await Promise.all(newMsgs.map(async (m) => {
+            try {
+              const raw = await decryptMessage(m.encryptedText, m.iv, m.salt, password, m.iterations || 100000);
+              const parsed = JSON.parse(raw);
+              return { ...m, text: parsed.text, file: parsed.file };
+            } catch {
+              return { ...m, text: "[CORRUPTED_CIPHER_BLOCK]" };
+            }
+          }));
+          setMessages(decrypted);
+        };
+        
+        decryptAll();
       });
-
+      
       return () => unsubscribe();
     }
-  }, [chatJoined, chatActiveRoom, chatPassword]);
+  }, [viewState, activeRoom, password]);
 
-  const copyToClipboard = async (type: 'link' | 'invite' | 'share' | 'id' = 'link') => {
-    const currentOrigin = window.location.origin;
-    const cleanBase = currentOrigin.replace(/\/$/, '');
-    const url = `${cleanBase}/#s=${generatedId}`;
-    
-    let text = '';
-    if (type === 'id') {
-      text = generatedId;
-    } else if (type === 'link') {
-      text = url;
-    } else {
-      text = `🔐 IDB Secret Message\n\nID: ${generatedId}\nLink: ${url}\n\n(View limit: ${viewLimit} times)`;
-    }
-    
-    if (type === 'share' && navigator.share) {
-      try {
-        await navigator.share({
-          title: 'IDB Secret Message',
-          text: `I've sent you a secret message. ID: ${generatedId}`,
-          url: url
-        });
-      } catch (err) {
-        // Fallback to clipboard if share is cancelled or fails
-        navigator.clipboard.writeText(url);
-      }
-    } else {
-      navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  // ANIMATIONS
+  const pageVariants = {
+    initial: { opacity: 0, y: 10 },
+    enter: { opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.23, 1, 0.32, 1] } },
+    exit: { opacity: 0, y: -10, transition: { duration: 0.2 } }
   };
-
-  const reset = () => {
-    window.history.pushState({}, '', window.location.pathname);
-    setViewState('LANDING');
-    setLoading(false); // Reset loading
-    setTask('');
-    setMessage('');
-    setPassword('');
-    setViewLimit(1);
-    setGeneratedId('');
-    setRetrieveId('');
-    setManualIdInput('');
-    setRetrieveData(null);
-    setRevealPassword('');
-    setDecryptedMessage(null);
-    setAttachedFile(null);
-    setError(null);
-  };
-
-  const containerVariants = {
-    hidden: { opacity: 0, x: -20 },
-    visible: { opacity: 1, x: 0, transition: { duration: 0.4, ease: "easeOut" } },
-    exit: { opacity: 0, x: 20, transition: { duration: 0.2 } }
-  };
-
-  const NavItem = ({ label, target, num }: { label: string, target: ViewState, num: string }) => (
-    <button 
-      onClick={() => {
-        setViewState(target);
-        setLoading(false); // Clear loading on navigation
-        setError(null);   // Clear error on navigation
-      }}
-      className={`group flex items-center gap-4 py-3 border-b border-foreground/5 w-full text-left transition-all ${viewState === target ? 'opacity-100' : 'opacity-30 hover:opacity-100'}`}
-    >
-      <span className="text-[10px] font-mono font-bold">{num}</span>
-      <span className="text-sm font-black tracking-tighter uppercase">{label}</span>
-      <ChevronRight className={`w-3 h-3 ml-auto transition-transform ${viewState === target ? 'translate-x-0' : '-translate-x-2 group-hover:translate-x-0'}`} />
-    </button>
-  );
 
   return (
-    <div className={`min-h-screen bg-background text-foreground font-sans flex flex-col md:flex-row overflow-x-hidden ${isDark ? 'dark' : ''}`}>
-      {/* Sidebar Navigation */}
-      <aside className="w-full md:w-64 border-r border-border p-8 flex flex-col gap-12 z-20 bg-background transition-colors duration-300">
-        <div className="flex justify-between items-start">
-          <div className="cursor-pointer" onClick={reset}>
-            <h1 className="text-2xl font-black tracking-tighter leading-tight italic">IDB.</h1>
-            <p className="text-[9px] font-bold uppercase tracking-widest opacity-30 mt-1">Secret Protocol 5.0</p>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsDark(!isDark)}
-            className="rounded-none hover:bg-neon hover:text-black transition-all"
-          >
-            {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </Button>
+    <div className={cn("min-h-screen flex flex-col uppercase", theme === 'PHANTOM' ? 'selection:bg-cyan-400 selection:text-black' : '')}>
+      
+      {/* HEADER RAIL */}
+      <header className="fixed top-0 left-0 right-0 z-50 mix-blend-difference px-6 py-8 flex justify-between items-center pointer-events-none">
+        <div className="flex flex-col">
+          <h1 className="text-4xl md:text-6xl font-display leading-[0.8]">IDB_SECURE</h1>
+          <p className={cn("font-mono text-[8px] tracking-[0.4em] opacity-60 mt-2", currentTheme.primary)}>Protocol v4.0.2 // Zero Knowledge</p>
         </div>
-
-        <nav className="flex-1 space-y-2">
-           <NavItem num="01" label="Protocol Home" target="LANDING" />
-           <NavItem num="02" label="New Message" target="CREATE" />
-           <NavItem num="03" label="See My Message" target="DISCOVER" />
-           <NavItem num="04" label="Temporary Chat" target="CHAT" />
-           <NavItem num="05" label="How it works" target="HOW_IT_WORKS" />
-           <NavItem num="06" label="Security" target="SECURITY" />
-           <NavItem num="07" label="Info" target="ABOUT" />
-           <NavItem num="08" label="Contact" target="CONTACT" />
-        </nav>
-
-        <div className="p-4 bg-foreground text-background flex items-center justify-between">
-           <span className="text-[10px] font-bold uppercase tracking-widest">Status</span>
-           <div className="w-2 h-2 bg-neon rounded-full animate-pulse shadow-[0_0_8px_#00FF00]" />
-        </div>
-      </aside>
-
-      {/* Main Content Area */}
-      <main className="flex-1 relative min-h-screen flex flex-col">
-        {/* Background Marquee / Graphic */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0 opacity-[0.05]">
-           <h2 className="text-[25vw] font-display uppercase leading-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap select-none rotate-[-10deg]">
-             BUKOLA
-           </h2>
-        </div>
-
-        <div className="relative z-10 flex-1 flex flex-col px-8 md:px-16 py-12 md:py-24 max-w-4xl">
-          {error && (
-            <div className="mb-8 border-2 border-red-500 bg-red-500/10 p-4 text-[10px] font-black uppercase text-red-500 flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>{error}</span>
-            </div>
+        <div className="flex items-center gap-4 pointer-events-auto">
+          {viewState === 'CHAT' && (
+            <button 
+              onClick={() => setShowSettings(!showSettings)}
+              className={cn("p-2 brutal-border hover:bg-foreground hover:text-background transition-all", currentTheme.primary, currentTheme.border)}
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           )}
-          <AnimatePresence mode="wait">
-            {viewState === 'LOADING' && (
-              <motion.div key="loading" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="flex flex-col gap-6 py-20">
-                <div className="text-[60px] md:text-[120px] font-display leading-[0.8] animate-pulse">CONNECTING...</div>
-                <p className="font-mono text-sm opacity-40">Decrypting satellite uplink...</p>
-              </motion.div>
-            )}
+          <div className={cn("text-[10px] font-mono", currentTheme.primary)}>
+            {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : "STATUS: STEALTH"}
+          </div>
+        </div>
+      </header>
 
-            {viewState === 'LANDING' && (
-              <motion.div key="landing" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                <div className="relative overflow-hidden h-12 flex items-center border-y-2 border-foreground -mx-8 md:-mx-16 bg-neon mb-12">
-                  <div className="flex whitespace-nowrap animate-marquee">
-                    {[1,2,3,4,5,6].map(i => (
-                      <span key={i} className="text-xl font-display uppercase tracking-[0.2em] px-8">
-                        IDB SECURE LINK SYSTEM // PROTOCOL ACTIVATED // ZERO KNOWLEDGE ARCHITECTURE // 
-                      </span>
-                    ))}
-                  </div>
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 flex flex-col pt-32 px-6 pb-12 max-w-7xl mx-auto w-full">
+        <AnimatePresence mode="wait">
+          
+          {/* LANDING VIEW */}
+          {viewState === 'LANDING' && (
+            <motion.div 
+              key="landing"
+              variants={pageVariants}
+              initial="initial"
+              animate="enter"
+              exit="exit"
+              className="flex-1 flex flex-col justify-center gap-12"
+            >
+              <div className="space-y-6 max-w-2xl">
+                <div className="flex items-center gap-3 opacity-30">
+                  <Terminal className="w-4 h-4" />
+                  <span className="text-[10px] font-mono tracking-tighter">Initializing terminal interface...</span>
                 </div>
+                <h2 className="text-6xl md:text-8xl font-display leading-[0.9]">Destroy the trail.</h2>
+                <p className="font-mono text-sm opacity-60 max-w-md">
+                  Messages are encrypted client-side using 256-bit AES-GCM. 
+                  Access tokens are never sent to the server. 
+                  Uplinks expire after 24 hours.
+                </p>
+              </div>
 
-                <div className="space-y-4">
-                  <div className="text-[80px] md:text-[150px] font-display leading-[0.8] tracking-tighter uppercase relative text-foreground">
-                    Wildly <br /> 
-                    <span className="text-neon italic drop-shadow-[0_0_20px_rgba(0,255,0,0.4)]">Secure.</span>
-                  </div>
-                  <p className="max-w-md text-lg md:text-xl font-medium leading-relaxed opacity-60">
-                    The world's most dynamic encryption platform. Create, share, and destroy messages with a single tap.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-8">
-                  <button 
-                    onClick={() => setViewState('CREATE')}
-                    className="h-24 border-4 border-foreground p-6 flex flex-col justify-between hover:bg-foreground hover:text-background transition-all group relative overflow-hidden"
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-widest opacity-50 group-hover:opacity-100 italic z-10">Phase 01</span>
-                    <span className="text-xl font-black uppercase tracking-tighter z-10 text-left">New Secret Message</span>
-                    <div className="absolute right-[-10%] bottom-[-20%] text-[80px] font-display text-foreground/5 group-hover:text-background/10 transition-all">01</div>
-                  </button>
-                  <button 
-                   onClick={() => setViewState('DISCOVER')}
-                   className="h-24 border-4 border-foreground p-6 flex flex-col justify-between hover:bg-neon transition-all hover:text-black group relative overflow-hidden"
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-widest opacity-50 group-hover:opacity-100 italic z-10">Phase 02</span>
-                    <span className="text-xl font-black uppercase tracking-tighter flex items-center justify-between z-10">
-                       See My Message <ChevronRight />
-                    </span>
-                    <div className="absolute right-[-10%] bottom-[-20%] text-[80px] font-display text-foreground/5 group-hover:text-black/10 transition-all">02</div>
-                  </button>
-                </div>
-
-                <div className="pt-12 border-t border-foreground/10 grid grid-cols-3 gap-8">
-                   <div className="space-y-2">
-                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Uptime</span>
-                     <p className="text-2xl font-display uppercase">99.9%</p>
-                   </div>
-                   <div className="space-y-2">
-                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Encrypted</span>
-                     <p className="text-2xl font-display uppercase">AES-256</p>
-                   </div>
-                   <div className="space-y-2">
-                     <span className="text-[9px] font-black uppercase tracking-[0.2em]">Protocol</span>
-                     <p className="text-2xl font-display uppercase">IDB-5</p>
-                   </div>
-                </div>
-              </motion.div>
-            )}
-
-            {viewState === 'CREATE' && (
-              <motion.div key="create" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                 <div className="space-y-2">
-                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Post it.</h2>
-                    <p className="font-medium opacity-50">Encryption is client-side. We never see your password.</p>
-                 </div>
-
-                 <form onSubmit={handleCreateSecret} className="space-y-4">
-                    <Input 
-                      value={task}
-                      onChange={(e) => setTask(e.target.value)}
-                      placeholder="ASSOCIATED TASK / TITLE (OPTIONAL)"
-                      className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-8 uppercase tracking-widest placeholder:opacity-20 transition-colors"
-                    />
-
-                    <Textarea 
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      placeholder="Write your secret..."
-                      className="min-h-[220px] border-4 border-foreground bg-background rounded-none text-xl p-8 focus-visible:ring-0 shadow-[12px_12px_0px_0px_var(--color-neon)]/50 focus:shadow-none transition-all"
-                      required
-                    />
-
-                    {/* File Attachment Section */}
-                    <div 
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={handleDrop}
-                      className={`border-4 border-foreground border-dashed p-4 flex flex-col gap-4 transition-all ${isDragOver ? 'bg-neon/20 scale-[1.02]' : 'bg-background/50'}`}
-                    >
-                       <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-black uppercase italic opacity-40">Secure Attachment (Max 500KB)</span>
-                          {attachedFile && (
-                            <button 
-                              type="button" 
-                              onClick={() => {
-                                setAttachedFile(null);
-                                if (fileInputRef.current) fileInputRef.current.value = '';
-                              }}
-                              className="text-red-500 hover:text-red-600 transition-colors"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          )}
-                       </div>
-                       
-                       {!attachedFile ? (
-                         <div className="relative">
-                            <input 
-                              ref={fileInputRef}
-                              type="file" 
-                              accept="image/*,application/pdf,text/plain,.doc,.docx"
-                              onChange={handleFileChange}
-                              className="hidden"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => fileInputRef.current?.click()}
-                              className="w-full h-16 flex items-center justify-center gap-3 border-2 border-foreground hover:bg-foreground hover:text-background transition-all group"
-                            >
-                               <Upload className="w-5 h-5 group-hover:animate-bounce" />
-                               <span className="font-black uppercase text-xs">Browse Device Shards</span>
-                            </button>
-                            <p className="text-[8px] text-center mt-2 font-black uppercase opacity-20">or drop protocol shard here</p>
-                         </div>
-                       ) : (
-                         <div className="h-20 flex items-center gap-4 px-4 bg-foreground text-background border-l-4 border-neon">
-                            {attachedFile.type.startsWith('image/') ? (
-                              <div className="w-12 h-12 border border-neon/30 overflow-hidden shrink-0 bg-black/20">
-                                <img 
-                                  src={attachedFile.data} 
-                                  alt="Preview" 
-                                  className="w-full h-full object-cover"
-                                  referrerPolicy="no-referrer"
-                                />
-                              </div>
-                            ) : (
-                              <FileText className="w-8 h-8 text-neon shrink-0" />
-                            )}
-                            <div className="flex flex-col min-w-0 flex-1">
-                               <div className="flex items-center gap-2">
-                                  <span className="text-xs font-black uppercase truncate">{attachedFile.name}</span>
-                                  <Badge className="bg-neon text-black text-[8px] h-4 rounded-none border-none">{(attachedFile.data.length * 0.75 / 1024).toFixed(1)}KB</Badge>
-                               </div>
-                               <span className="text-[9px] opacity-60 uppercase font-mono">{attachedFile.type || 'PROTOCOL/SHARD'}</span>
-                            </div>
-                         </div>
-                       )}
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="relative">
-                        <Input 
-                          type={showCreatePassword ? "text" : "password"}
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder="ACCESS PASSWORD"
-                          className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 pr-12 w-full transition-colors"
-                          required
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowCreatePassword(!showCreatePassword)}
-                          className={`absolute right-4 top-1/2 -translate-y-1/2 transition-all p-1 hover:bg-foreground/5 ${showCreatePassword ? 'text-neon drop-shadow-[0_0_8px_rgba(0,255,0,0.6)]' : 'text-foreground/40 hover:text-foreground'}`}
-                        >
-                          {showCreatePassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                        </button>
-                      </div>
-
-                      {/* Password Strength Meter */}
-                      <div className="md:col-span-2 space-y-1">
-                        <div className="h-1.5 w-full bg-foreground/10 overflow-hidden">
-                          <motion.div 
-                            initial={{ width: 0 }}
-                            animate={{ 
-                              width: `${passwordStrength}%`,
-                              backgroundColor: passwordStrength < 40 ? '#ef4444' : passwordStrength < 80 ? '#eab308' : '#00ff00' 
-                            }}
-                            className="h-full transition-all duration-500"
-                          />
-                        </div>
-                        <div className="flex justify-between text-[8px] font-black uppercase tracking-tighter opacity-40 italic">
-                          <span>Entropy: {Math.round(passwordStrength)}%</span>
-                          <span>Status: {passwordStrength === 0 ? 'Awaiting Data' : passwordStrength < 40 ? 'Vulnerable' : passwordStrength < 80 ? 'Developing' : 'Secure Shard'}</span>
-                        </div>
-                      </div>
-
-                      <div className="md:col-span-2 flex flex-wrap gap-4 pt-2">
-                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.length ? 'text-neon' : 'opacity-30'}`}>
-                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.length ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
-                          8+ Characters
-                        </div>
-                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.digit ? 'text-neon' : 'opacity-30'}`}>
-                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.digit ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
-                          1+ Number
-                        </div>
-                        <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-colors ${passwordCriteria.special ? 'text-neon' : 'opacity-30'}`}>
-                          <div className={`w-1.5 h-1.5 rounded-full ${passwordCriteria.special ? 'bg-neon shadow-[0_0_8px_rgba(0,255,0,0.8)]' : 'bg-foreground'}`} />
-                          1+ Special
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <div className="space-y-1">
-                          <span className="text-[10px] font-black uppercase opacity-40">Destruction Timer</span>
-                          <select 
-                            value={expiryHours}
-                            onChange={(e) => setExpiryHours(Number(e.target.value))}
-                            className="w-full h-16 border-4 border-foreground bg-background rounded-none focus:outline-none font-bold px-6 uppercase transition-colors appearance-none cursor-pointer hover:bg-accent/50"
-                          >
-                            <option value={1}>1 HR - EPHEMERAL SHARD</option>
-                            <option value={24}>24 HRS - STANDARD SHARD</option>
-                            <option value={168}>7 DAYS - PERSISTENT SHARD</option>
-                            <option value={0}>PERMANENT (LIMIT READ ONLY)</option>
-                          </select>
-                        </div>
-
-                        <div className="space-y-1">
-                          <span className="text-[10px] font-black uppercase opacity-40">View Access Limit</span>
-                          <Input 
-                            type="number"
-                            min="1"
-                            max="50"
-                            value={viewLimit}
-                            onChange={(e) => setViewLimit(parseInt(e.target.value))}
-                            placeholder="VIEW LIMIT"
-                            className="h-16 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 font-bold px-6 transition-colors"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <Button type="submit" disabled={loading || !isPasswordValid} className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all disabled:opacity-20 disabled:cursor-not-allowed">
-                       {loading ? <RefreshCcw className="animate-spin" /> : 'Lock Session'}
-                    </Button>
-                 </form>
-              </motion.div>
-            )}
-            {viewState === 'DISCOVER' && (
-              <motion.div key="discover" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                 <div className="space-y-2">
-                    <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">See My <br /> Message.</h2>
-                    <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">Retrieve a message from the global vault.</p>
-                 </div>
-
-                 <div className="space-y-6">
-                    <div className="relative group">
-                       <Input 
-                        placeholder="PASTE SECRET ID HERE"
-                        value={manualIdInput}
-                        onChange={(e) => setManualIdInput(e.target.value.toUpperCase())}
-                        className="h-24 border-4 border-foreground bg-background rounded-none focus-visible:ring-0 text-3xl font-display tracking-[0.2em] px-10 placeholder:opacity-10 group-hover:bg-accent/50 transition-all text-foreground"
-                       />
-                       <div className="absolute right-8 top-1/2 -translate-y-1/2 p-2 bg-foreground text-background">
-                          <Eye className="w-6 h-6" />
-                       </div>
-                    </div>
-                    <Button 
-                      onClick={() => manualIdInput && handleLoadSecret(manualIdInput.trim())}
-                      className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all"
-                    >
-                      Retrieve Data
-                    </Button>
-                 </div>
-
-                 <div className="p-8 border-2 border-foreground border-dashed flex items-start gap-6 opacity-40 text-foreground">
-                    <AlertCircle className="w-6 h-6 shrink-0" />
-                    <p className="text-xs font-bold leading-relaxed uppercase italic">
-                      Passwords are the critical factor. If you enter the correct ID but the wrong password, the data remains scrambled. Ensure you have the exact credentials before attempting retrieval.
-                    </p>
-                 </div>
-              </motion.div>
-            )}
-
-            {viewState === 'CHAT' && (
-              <motion.div key="chat" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                 {!chatJoined ? (
-                   <div className="space-y-12">
-                      <div className="space-y-2 flex justify-between items-start">
-                        <div>
-                          <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Join Room.</h2>
-                          <p className="font-medium opacity-50 uppercase text-[10px] tracking-widest">Temporary 24h Secure Chat Protocol.</p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1">
-                          <div className={`flex items-center gap-2 px-3 py-1 border ${dbStatus === 'ONLINE' ? 'border-neon text-neon' : 'border-red-500 text-red-500'} text-[8px] font-black uppercase tracking-widest`}>
-                            <div className={`w-1.5 h-1.5 rounded-full ${dbStatus === 'ONLINE' ? 'bg-neon animate-pulse' : 'bg-red-500'} shadow-[0_0_8px_currentColor]`} />
-                            {dbStatus}
-                          </div>
-                          {!window.isSecureContext && (
-                            <div className="text-[7px] text-red-500 font-black uppercase italic">Unsecured Environment: Crypto Disabled</div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                         <div className="space-y-6">
-                            <h3 className="text-xl font-black uppercase italic text-neon">Create New Room</h3>
-                            <form onSubmit={handleCreateChatRoom} className="space-y-4">
-                               <Input 
-                                 type="password"
-                                 placeholder="SET ROOM PASSWORD"
-                                 value={chatPassword}
-                                 onChange={(e) => setChatPassword(e.target.value)}
-                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase"
-                                 required
-                               />
-                               <Button type="submit" disabled={loading || dbStatus === 'OFFLINE'} className="w-full h-16 bg-foreground text-background hover:bg-neon hover:text-black font-black uppercase rounded-none transition-all disabled:opacity-50">
-                                  {loading ? 'Transmitting...' : 'Initialize Protocol'}
-                               </Button>
-                            </form>
-                         </div>
-
-                         <div className="space-y-6">
-                            <h3 className="text-xl font-black uppercase italic text-neon">Join Existing Room</h3>
-                            <form onSubmit={handleJoinChatRoom} className="space-y-4">
-                               <Input 
-                                 placeholder="ROOM CODE (E.G. XJ7K2P)"
-                                 value={chatRoomCode}
-                                 onChange={(e) => setChatRoomCode(e.target.value.toUpperCase())}
-                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase tracking-widest"
-                                 required
-                               />
-                               <Input 
-                                 type="password"
-                                 placeholder="ROOM PASSWORD"
-                                 value={chatPassword}
-                                 onChange={(e) => setChatPassword(e.target.value)}
-                                 className="h-16 border-4 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase"
-                                 required
-                               />
-                               <Button type="submit" disabled={loading || dbStatus === 'OFFLINE'} className="w-full h-16 bg-foreground text-background hover:bg-neon hover:text-black font-black uppercase rounded-none transition-all disabled:opacity-50">
-                                  {loading ? 'Authenticating...' : 'Authenticate Uplink'}
-                               </Button>
-                            </form>
-                         </div>
-                      </div>
-                   </div>
-                 ) : (
-                   <div className="flex flex-col h-[70vh] border-4 border-foreground bg-background relative">
-                      <div className="p-4 bg-foreground text-background flex justify-between items-center shrink-0">
-                         <div className="flex flex-col">
-                            <span className="text-[8px] font-black uppercase opacity-50">Secure Chat Channel</span>
-                            <span className="text-lg font-display tracking-widest uppercase">Room: {chatActiveRoom.roomCode}</span>
-                         </div>
-                         <div className="flex gap-4">
-                            <Button variant="ghost" size="icon" onClick={() => {
-                               navigator.clipboard.writeText(`${window.location.origin}/#c=${chatActiveRoom.roomCode}`);
-                               setCopied(true);
-                               setTimeout(() => setCopied(false), 2000);
-                            }} className="h-8 w-8 hover:text-neon">
-                               {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-                            </Button>
-                            <Button variant="ghost" size="icon" onClick={() => {
-                               setChatJoined(false);
-                               setChatActiveRoom(null);
-                               setChatMessages([]);
-                               setChatPassword('');
-                               setChatRoomCode('');
-                            }} className="h-8 w-8 hover:text-red-500">
-                               <X className="w-4 h-4" />
-                            </Button>
-                         </div>
-                      </div>
-
-                      <div className="flex-1 overflow-y-auto p-6 space-y-4 font-mono scrollbar-hide">
-                         {chatMessages.length === 0 && (
-                            <div className="flex flex-col items-center justify-center h-full opacity-20 italic">
-                               <Lock className="w-12 h-12 mb-4" />
-                               <p className="text-[10px] font-black uppercase">Channel Secured. Waiting for messages...</p>
-                            </div>
-                         )}
-                         {chatMessages.map((msg, i) => (
-                           <motion.div 
-                             initial={{ opacity: 0, x: -10 }}
-                             animate={{ opacity: 1, x: 0 }}
-                             key={msg.id || i} 
-                             className="flex flex-col gap-1 border-l-2 border-foreground/10 pl-4 py-1"
-                           >
-                              <div className="flex items-center gap-4">
-                                 <span className="text-[9px] font-black uppercase text-neon">{msg.senderId}</span>
-                                 <span className="text-[7px] opacity-30 uppercase">{msg.timestamp?.toDate().toLocaleTimeString()}</span>
-                              </div>
-                              <p className="text-sm leading-relaxed">{msg.text}</p>
-                           </motion.div>
-                         ))}
-                         <div ref={chatBottomRef} />
-                      </div>
-
-                      <div className="p-4 border-t-2 border-foreground/10 shrink-0">
-                         <form onSubmit={handleSendChatMessage} className="flex gap-2">
-                            <Input 
-                              placeholder="TRANSMIT SECURE DATA..."
-                              value={chatNewMessage}
-                              onChange={(e) => setChatNewMessage(e.target.value)}
-                              className="h-16 border-2 border-foreground bg-background focus-visible:ring-0 font-bold px-6 uppercase text-xs"
-                            />
-                            <Button type="submit" className="h-16 w-16 bg-foreground text-background hover:bg-neon hover:text-black shrink-0 transition-all">
-                               <Send className="w-6 h-6" />
-                            </Button>
-                         </form>
-                      </div>
-
-                      <div className="absolute bottom-[-24px] right-0 flex items-center gap-2">
-                         <div className="w-2 h-2 bg-neon rounded-full animate-pulse shadow-[0_0_8px_#00FF00]" />
-                         <span className="text-[8px] font-black uppercase opacity-40">End-to-End Encrypted Tunnel</span>
-                      </div>
-                   </div>
-                 )}
-              </motion.div>
-            )}
-
-            {viewState === 'SUCCESS' && (
-              <motion.div key="success" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-10 py-10">
-                <AnimatePresence>
-                  {autoCopied && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: -20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -20 }}
-                      className="bg-neon text-black p-4 text-xs font-black uppercase flex items-center justify-between border-2 border-black"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Check className="w-4 h-4" />
-                        Protocol Link Auto-Copied to Clipboard
-                      </div>
-                      <span className="opacity-50 italic">Ready for share</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-                
-                <div className="flex flex-col gap-6">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-neon drop-shadow-[0_0_10px_rgba(0,255,0,0.5)]">Success.</h2>
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <p className="font-bold opacity-50 uppercase text-xs">The protocol has verified your transmission.</p>
-                    <div className="flex items-center gap-3 bg-foreground text-background px-4 py-2 border-b-4 border-neon">
-                      <span className="text-[10px] font-black uppercase tracking-widest leading-none">Views Remaining</span>
-                      <div className="flex gap-0.5">
-                        {Array.from({ length: Math.min(viewLimit, 10) }).map((_, i) => (
-                          <div key={i} className="w-1 h-3 bg-neon" />
-                        ))}
-                        {viewLimit > 10 && <span className="text-[9px] font-black ml-1 text-neon/70">+{viewLimit - 10}</span>}
-                      </div>
-                      <span className="text-xl font-display leading-none ml-2 text-neon">{viewLimit}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="p-1 bg-foreground">
-                    <div className="bg-background p-8 flex flex-col md:flex-row items-center justify-between gap-8 border-2 border-foreground">
-                      <div className="flex flex-col gap-1 w-full truncate text-foreground">
-                         <span className="text-[10px] font-black uppercase opacity-30 italic">Encrypted Endpoint</span>
-                         <div className="flex items-center gap-3">
-                            <code className="text-lg md:text-2xl font-display truncate select-all flex-1">{PUBLIC_BASE_URL}/#s={generatedId}</code>
-                            <Button 
-                              onClick={() => copyToClipboard('link')}
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 shrink-0 hover:text-neon transition-colors"
-                            >
-                               {copied ? <Check className="w-4 h-4 text-neon" /> : <Copy className="w-4 h-4" />}
-                            </Button>
-                         </div>
-                      </div>
-                      <div className="flex gap-2 shrink-0 w-full md:w-auto">
-                        <Button onClick={() => copyToClipboard('link')} className="flex-1 h-16 bg-foreground text-background hover:bg-neon hover:text-black rounded-none transition-all">
-                          {copied ? <Check /> : <Copy className="mr-2" />} Link
-                        </Button>
-                        <Button onClick={() => copyToClipboard('share')} className="flex-1 h-16 bg-neon text-black font-black border-2 border-black rounded-none">
-                           <Share2 className="mr-2" /> Share to Social
-                        </Button>
-                        <Button onClick={() => copyToClipboard('invite')} variant="outline" className="flex-1 h-16 border-2 border-foreground rounded-none font-bold text-foreground">
-                           Invite
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="p-6 bg-accent/50 flex flex-col md:flex-row justify-between items-center border-l-8 border-foreground group gap-4">
-                     <div className="flex flex-col gap-1 text-foreground w-full md:w-auto">
-                        <span className="font-bold uppercase text-[10px] opacity-40 italic underline underline-offset-4 tracking-widest">Physical Secret ID</span>
-                        <div className="flex items-center gap-4">
-                           <span className="text-3xl font-display tracking-[0.2em]">{generatedId}</span>
-                           <Button 
-                             onClick={() => copyToClipboard('id')}
-                             variant="ghost"
-                             size="icon"
-                             className="h-10 w-10 hover:bg-neon hover:text-black transition-all rounded-none border border-foreground/20"
-                           >
-                             {copied ? <Check className="w-4 h-4 text-neon" /> : <Copy className="w-4 h-4" />}
-                           </Button>
-                        </div>
-                     </div>
-                     <div className="flex items-center gap-2 w-full md:w-auto">
-                        <p className="text-[10px] font-black uppercase opacity-20 hidden md:block">Reference code for manual retrieval</p>
-                        <div className="h-0.5 w-12 bg-foreground/10 hidden md:block" />
-                     </div>
-                  </div>
-                </div>
-
-                <Button onClick={reset} variant="ghost" className="text-[10px] font-bold uppercase tracking-widest opacity-40 hover:opacity-100">
-                  Wipe & Resume Home
+              <div className="flex flex-col md:flex-row gap-4">
+                <Button onClick={() => setViewState('CREATE')} className="h-20 text-lg w-full md:w-64">
+                  Open Shard <Plus className="ml-2 w-5 h-5" />
                 </Button>
-              </motion.div>
-            )}
+                <Button onClick={() => setViewState('JOIN')} variant="secondary" className="h-20 text-lg w-full md:w-64">
+                  Uplink Key <ArrowRight className="ml-2 w-5 h-5" />
+                </Button>
+              </div>
+            </motion.div>
+          )}
 
-            {viewState === 'RETRIEVE' && (
-              <motion.div key="retrieve" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                <div className="space-y-2">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">ID Verified.</h2>
-                  <div className="flex flex-wrap gap-2 items-center">
-                    <p className="font-black opacity-50 uppercase text-xs tracking-widest italic">Target: {retrieveId} // Limit: {retrieveData?.viewLimit}</p>
-                    {retrieveData?.task && (
-                      <span className="bg-neon text-black px-3 py-1 text-[10px] font-black uppercase leading-none border border-black italic">Task: {retrieveData.task}</span>
-                    )}
-                  </div>
+          {/* CREATE VIEW */}
+          {viewState === 'CREATE' && (
+            <motion.div 
+              key="create"
+              variants={pageVariants}
+              initial="initial"
+              animate="enter"
+              exit="exit"
+              className="max-w-xl self-center w-full space-y-8"
+            >
+              <div className="space-y-2">
+                <h3 className="text-4xl">Set Secure Key</h3>
+                <p className="opacity-40 text-[10px] font-mono">This token generates your encryption matrix. Don't lose it.</p>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="relative">
+                  <Input 
+                    type="password" 
+                    placeholder="ENTER SECRET HANDSHAKE..." 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="h-20 text-xl"
+                  />
+                  <Fingerprint className="absolute right-6 top-1/2 -translate-y-1/2 w-6 h-6 opacity-20" />
                 </div>
-
-                <form onSubmit={handleDecrypt} className="space-y-6">
-                  <div className="space-y-2">
-                    <div className="relative group">
-                      <Input 
-                        type={showRevealPassword ? "text" : "password"}
-                        value={revealPassword}
-                        onChange={(e) => setRevealPassword(e.target.value)}
-                        placeholder="ENTER ACCESS PASSWORD"
-                        className="h-24 border-4 border-foreground rounded-none focus-visible:ring-0 bg-background text-foreground text-2xl font-black px-10 pr-24 placeholder:opacity-10 w-full transition-colors"
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowRevealPassword(!showRevealPassword)}
-                        className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-2 p-2 bg-foreground text-background hover:bg-neon hover:text-black transition-all"
-                      >
-                        {showRevealPassword ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}
-                        <span className="text-[10px] font-bold uppercase tracking-widest hidden md:inline">
-                          {showRevealPassword ? 'Hide' : 'Show'}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                  <Button type="submit" disabled={loading} className="w-full h-24 bg-foreground text-background rounded-none font-black text-2xl hover:bg-neon hover:text-black transition-all">
-                    {loading ? <RefreshCcw className="animate-spin" /> : 'REVEAL CONTENT'}
-                  </Button>
-                </form>
-              </motion.div>
-            )}
-
-            {viewState === 'REVEALED' && (
-              <motion.div key="revealed" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-8">
-                <div className="flex justify-between items-center border-b-4 border-foreground pb-4">
-                  <div className="space-y-2">
-                    <h2 className="text-[60px] font-display leading-none uppercase text-foreground">Revealed.</h2>
-                    {retrieveData?.task && (
-                      <Badge className="bg-neon text-black rounded-none font-black uppercase text-[10px] py-1 px-4 italic border border-black">
-                        Task: {retrieveData.task}
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="text-right flex flex-col items-end gap-2">
-                     <div className="flex items-center gap-3 bg-foreground text-background px-3 py-1 border-l-4 border-neon shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)]">
-                        <span className="text-[9px] font-black uppercase tracking-widest">Remaining Views</span>
-                        <span className="text-2xl font-display leading-none text-neon">{Math.max(0, retrieveData.viewLimit - retrieveData.viewCount - 1)}</span>
-                     </div>
-                     <div className="text-foreground">
-                        <p className="text-[9px] font-black uppercase">Decrypted Payload</p>
-                        <p className="font-mono text-xs opacity-40">{new Date().toISOString()}</p>
-                     </div>
-                  </div>
-                </div>
-                <div className="p-12 bg-foreground text-background min-h-[300px] flex items-center justify-center relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-4 font-display text-[10vw] opacity-[0.03] select-none uppercase text-background">SECRET</div>
-                  <p className="text-2xl md:text-3xl leading-relaxed whitespace-pre-wrap font-mono uppercase relative z-10 text-center tracking-tight italic">
-                    "{decryptedMessage}"
-                  </p>
-                </div>
-
-                {/* Secure Attachment Reveal */}
-                {retrieveData?.attachedFile && (
-                  <div className="p-8 border-4 border-foreground bg-accent/20 space-y-6">
-                    <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-                      <div className="flex items-center gap-6">
-                         <div className="w-16 h-16 bg-foreground text-background flex items-center justify-center shrink-0">
-                            {retrieveData.attachedFile.type?.startsWith('image/') ? (
-                              <img 
-                                src={retrieveData.attachedFile.data} 
-                                alt="Secret Attachment" 
-                                className="w-full h-full object-cover"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <FileText className="w-8 h-8 text-neon" />
-                            )}
-                         </div>
-                         <div className="flex flex-col overflow-hidden">
-                            <span className="text-[10px] font-black uppercase opacity-40">Attached Protocol Shard</span>
-                            <span className="text-xl font-black uppercase truncate max-w-[200px] md:max-w-md">{retrieveData.attachedFile.name}</span>
-                            <span className="text-[9px] font-mono opacity-60 uppercase">{retrieveData.attachedFile.type}</span>
-                         </div>
-                      </div>
-                      <a 
-                        href={retrieveData.attachedFile.data} 
-                        download={retrieveData.attachedFile.name}
-                        className="h-16 px-10 bg-neon text-black font-black uppercase text-sm flex items-center gap-3 hover:bg-white transition-all shadow-[8px_8px_0px_0px_var(--color-foreground)] active:shadow-none active:translate-x-1 active:translate-y-1 w-full md:w-auto justify-center"
-                      >
-                        <Download className="w-5 h-5" />
-                        Retrieve File
-                      </a>
-                    </div>
-
-                    {retrieveData.attachedFile.type?.startsWith('image/') && (
-                      <div className="border-2 border-foreground/10 p-2 bg-black/5">
-                        <img 
-                          src={retrieveData.attachedFile.data} 
-                          alt="Decrypted Attachment" 
-                          className="max-h-[500px] w-auto mx-auto object-contain cursor-zoom-in"
-                          onClick={() => window.open(retrieveData.attachedFile.data, '_blank')}
-                          referrerPolicy="no-referrer"
-                        />
-                        <p className="text-[8px] text-center mt-2 opacity-30 font-black uppercase tracking-widest">End-to-End Decrypted Visual Asset</p>
-                      </div>
-                    )}
+                
+                {error && (
+                  <div className="p-4 bg-red-900/20 brutal-border border-red-500 text-red-500 text-[10px] font-mono">
+                    ERROR: {error}
                   </div>
                 )}
 
-                <div className="p-6 border-4 border-foreground bg-neon/10 flex gap-6 items-center">
-                   <ShieldCheck className="w-10 h-10 shrink-0 text-foreground" />
-                   <p className="text-sm font-black uppercase leading-tight italic text-foreground">
-                     Caution: This message is ephemeral. Once you close this session or the view limit is reached, it will be purged from existence.
-                   </p>
+                <div className="flex gap-4">
+                  <Button onClick={() => setViewState('LANDING')} variant="ghost">BACK</Button>
+                  <Button onClick={handleCreateRoom} disabled={loading} className="flex-1 h-16">
+                    {loading ? "INITIALIZING..." : "GENERATE SHARD"}
+                  </Button>
                 </div>
-                <Button onClick={reset} className="w-full h-20 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">EXPIRE SESSION</Button>
-              </motion.div>
-            )}
+              </div>
+            </motion.div>
+          )}
 
-            {viewState === 'HOW_IT_WORKS' && (
-              <motion.div key="how" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                <div className="space-y-2">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">The <br /> Protocol.</h2>
-                  <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">How IDB handles your sensitive data.</p>
-                </div>
+          {/* JOIN VIEW */}
+          {viewState === 'JOIN' && (
+            <motion.div 
+              key="join"
+              variants={pageVariants}
+              initial="initial"
+              animate="enter"
+              exit="exit"
+              className="max-w-xl self-center w-full space-y-8"
+            >
+              <div className="space-y-2">
+                <h3 className="text-4xl">Establish Uplink</h3>
+                <p className="opacity-40 text-[10px] font-mono">Input room sequence ID and authentication token.</p>
+              </div>
+              
+              <div className="space-y-4">
+                <Input 
+                  placeholder="SEQUENCE ID (E.G. AB12CD)..." 
+                  value={roomCode}
+                  onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                  className="h-16"
+                />
+                <Input 
+                  type="password" 
+                  placeholder="SECRET HANDSHAKE..." 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="h-16"
+                />
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-                   <div className="space-y-6">
-                      <div className="space-y-2">
-                         <h3 className="text-2xl font-black uppercase italic text-neon">01. End-To-End Encryption</h3>
-                         <p className="text-sm opacity-60 leading-relaxed">Everything happens in your browser. We use the enterprise-grade AES-256 GCM encryption protocol. Your message is scrambled using your personal password before it ever leaves your device.</p>
-                      </div>
-                      <div className="space-y-2">
-                         <h3 className="text-2xl font-black uppercase italic text-neon">02. Secure Transmission</h3>
-                         <p className="text-sm opacity-60 leading-relaxed">The encrypted payload (the "secret shard") is uploaded to our secure database with a unique ID. Because we don't store your password, the data remains a zero-knowledge secret.</p>
-                      </div>
-                   </div>
-                   <div className="space-y-6">
-                      <div className="space-y-2">
-                         <h3 className="text-2xl font-black uppercase italic text-neon">03. Automated Destruction</h3>
-                         <p className="text-sm opacity-60 leading-relaxed">Once the view limit is hit or the expiry timer runs out, the shard becomes inaccessible. Our one-time links ensure that your sensitive data doesn't persist on any server.</p>
-                      </div>
-                      <div className="space-y-2">
-                         <h3 className="text-2xl font-black uppercase italic text-neon">04. Local Retrieval</h3>
-                         <p className="text-sm opacity-60 leading-relaxed">The receiver needs both the link and the matching password key. Decryption happens locally on their web browser, ensuring total privacy from end to end.</p>
-                      </div>
-                   </div>
-                </div>
-
-                <div className="p-8 bg-foreground text-background">
-                   <h4 className="font-black uppercase mb-4 text-xs tracking-widest">When to use IDB Secret Message?</h4>
-                   <ul className="grid grid-cols-1 md:grid-cols-2 gap-4 text-[10px] font-bold uppercase italic">
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Share Passwords & Login Credentials</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Secure File & Photo Sharing</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Self-Destructing Notes for Privacy</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-neon" /> Gain Traffic with Private Invite Links</li>
-                   </ul>
-                </div>
-              </motion.div>
-            )}
-
-            {viewState === 'CONTACT' && (
-               <motion.div key="contact" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">Support.</h2>
-                  <div className="p-12 border-4 border-foreground space-y-6 text-foreground bg-background">
-                     <p className="font-bold text-xl uppercase italic">Need assistance with the protocol?</p>
-                     <p className="opacity-60 leading-relaxed">
-                       IDB Secret Message is a privacy-first platform. Due to our zero-knowledge architecture, we cannot recover forgotten passwords or messages. 
-                     </p>
-                      <div className="pt-6 space-y-4">
-                         <p className="text-xs font-black uppercase opacity-30 tracking-widest">Admin Support Channel</p>
-                         <a 
-                           href="https://wa.me/2349017837108" 
-                           target="_blank" 
-                           rel="noreferrer"
-                           className="flex items-center justify-center gap-4 h-20 px-8 bg-foreground text-background hover:bg-neon hover:text-black transition-all rounded-none w-full md:w-auto text-center"
-                         >
-                            <MessageCircle className="w-8 h-8" />
-                            <div className="flex flex-col items-start leading-tight">
-                               <span className="text-xl font-display uppercase italic">Open Secure Chat</span>
-                               <span className="text-[10px] font-black opacity-60 uppercase tracking-tighter">+234 901 783 7108</span>
-                            </div>
-                         </a>
-                      </div>
+                {error && (
+                  <div className="p-4 bg-red-900/20 brutal-border border-red-500 text-red-500 text-[10px] font-mono">
+                    ERROR: {error}
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                     <div className="p-6 bg-foreground text-background space-y-2">
-                        <p className="text-[10px] font-bold opacity-40 uppercase">Location</p>
-                        <p className="font-bold italic">SECURE NODE 01</p>
-                     </div>
-                     <div className="p-6 border-4 border-foreground space-y-2 text-foreground">
-                        <p className="text-[10px] font-bold opacity-40 uppercase">Response Time</p>
-                        <p className="font-bold italic">&lt; 12 HOURS</p>
-                     </div>
-                  </div>
-               </motion.div>
-            )}
+                )}
 
-            {viewState === 'ABOUT' && (
-               <motion.div key="about" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase text-foreground">The IDB System.</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-12 font-medium leading-relaxed opacity-70 text-foreground">
-                    <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Mission: Privacy First</h3>
-                       <p>IDB Secret Message was built to solve the "last mile" problem of digital security: sharing text and files without leaving a digital trail. Whether you're a developer sharing API keys or an individual sending private photos, IDB ensures your data is ephemeral.</p>
+                <div className="flex gap-4">
+                  <Button onClick={() => setViewState('LANDING')} variant="ghost">BACK</Button>
+                  <Button onClick={handleJoinRoom} disabled={loading} className="flex-1 h-16">
+                    {loading ? "AUTHENTICATING..." : "INITIATE PROTOCOL"}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* CHAT VIEW */}
+          {viewState === 'CHAT' && activeRoom && (
+            <motion.div 
+              key="chat"
+              variants={pageVariants}
+              initial="initial"
+              animate="enter"
+              exit="exit"
+              className="flex-1 flex flex-col relative"
+            >
+              {/* CHAT HEADER */}
+              <div className="flex justify-between items-end mb-8 border-b border-foreground/10 pb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Shield className={cn("w-3 h-3", currentTheme.primary)} />
+                    <span className="text-[8px] font-mono tracking-widest opacity-40">ENCRYPTED_CHANNEL // ID: {activeRoom.roomCode}</span>
+                  </div>
+                  <h3 className="text-3xl leading-none">{activeRoom.roomCode}</h3>
+                </div>
+                <div className="text-right hidden md:block">
+                  <span className="text-[8px] font-mono opacity-30 block">EXPIRES_IN</span>
+                  <span className="text-[12px] font-mono">23H 59M 59S</span>
+                </div>
+              </div>
+
+              {/* MESSAGES SCROLL */}
+              <div className="flex-1 overflow-y-auto space-y-6 pr-4 custom-scrollbar min-h-[400px]">
+                {messages.length === 0 && (
+                  <div className="h-full flex flex-col items-center justify-center opacity-20 gap-4 text-center">
+                    <Lock className="w-12 h-12" />
+                    <p className="font-mono text-[10px]">Secure channel empty. Start transmission.</p>
+                  </div>
+                )}
+                {messages.map((m) => (
+                  <div 
+                    key={m.id} 
+                    className={cn(
+                      "flex flex-col max-w-[85%]",
+                      m.senderId === userId ? "items-end self-end" : "items-start self-start"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-1 px-2">
+                       <span className={cn("text-[7px] font-mono font-bold", m.senderId === userId ? currentTheme.primary : "text-foreground/40")}>
+                        {m.senderId}
+                       </span>
+                       {showTimestamps && (
+                         <span className="text-[6px] opacity-20 font-mono">
+                           {m.timestamp?.toDate()?.toLocaleTimeString() || "..."}
+                         </span>
+                       )}
                     </div>
-                    <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Global Search Ranking</h3>
-                       <p>Our platform is designed to be highly accessible and discoverable. By creating high-quality, secure links, IDB helps users communicate securely across any platform while maintaining optimal performance and privacy levels.</p>
-                    </div>
-                    <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">One-Time Use</h3>
-                       <p>Messages are strictly limited by view counts and destruction timers. Our platform is the choice for anyone needing a "Burn After Reading" feature for their sensitive information.</p>
-                    </div>
-                    <div className="space-y-4">
-                       <h3 className="text-xl font-black uppercase tracking-tighter italic">Zero Logs</h3>
-                       <p>We don't track browser history, IP addresses, or user profiles. No accounts required. Just pure, unadulterated privacy for your secret messages.</p>
+                    
+                    <div className="group relative flex flex-col items-inherit">
+                      {/* REACTION PICKER (HOVER) */}
+                      <div className={cn(
+                        "absolute top-0 opacity-0 group-hover:opacity-100 transition-all z-20 flex gap-2 bg-accent/90 backdrop-blur-sm p-1 brutal-border shadow-xl",
+                        m.senderId === userId ? "right-full mr-2" : "left-full ml-2"
+                      )}>
+                        {['👍', '❤️', '😂', '🔥', '🤐', '💀'].map(emoji => (
+                          <button 
+                            key={emoji} 
+                            onClick={() => handleReaction(m.id, emoji)}
+                            className="hover:scale-125 transition-transform p-1 text-xs"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className={cn(
+                        "p-3 text-sm transition-all duration-300 relative",
+                        bubbleStyle === 'SHARP' && "brutal-border",
+                        bubbleStyle === 'ROUNDED' && "rounded-2xl border border-foreground/10",
+                        bubbleStyle === 'MINIMAL' && "border-l-2 border-foreground/30 pl-4",
+                        m.senderId === userId ? (bubbleStyle === 'SHARP' ? "bg-foreground text-background" : currentTheme.bg + " text-background") : "bg-accent/50 text-foreground",
+                        m.senderId === userId && "brutal-shadow"
+                      )}>
+                        {m.text && <p className="font-mono break-words">{m.text}</p>}
+                        {m.file && (
+                          <div className="mt-3 space-y-2">
+                            {m.file && m.file.type.startsWith('image/') ? (
+                              <div className="relative group/image">
+                                <img 
+                                  src={m.file.data} 
+                                  className="max-w-full brutal-border h-auto cursor-zoom-in brightness-90 group-hover/image:brightness-100 transition-all" 
+                                  alt="Shared Data" 
+                                  onClick={() => m.file && window.open(m.file.data)}
+                                />
+                              </div>
+                            ) : m.file && (
+                              <div className="flex items-center gap-3 p-3 bg-black/20 rounded">
+                                <File className="w-5 h-5 opacity-40" />
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] font-mono truncate max-w-[120px]">{m.file.name}</span>
+                                  <span className="text-[6px] opacity-30 font-mono">{m.file.type}</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ACTIVE REACTIONS DISPLAY */}
+                      {m.reactions && Object.values(m.reactions).some(u => u.length > 0) && (
+                        <div className={cn(
+                          "flex flex-wrap gap-1 mt-1",
+                          m.senderId === userId ? "justify-end" : "justify-start"
+                        )}>
+                          {Object.entries(m.reactions).map(([emoji, users]) => (
+                            users.length > 0 && (
+                              <button
+                                key={emoji}
+                                onClick={() => handleReaction(m.id, emoji)}
+                                className={cn(
+                                  "flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono brutal-border bg-black transition-all hover:scale-105 active:scale-95",
+                                  users.includes(userId) ? "border-neon text-neon" : "border-foreground/10 text-foreground/60"
+                                )}
+                              >
+                                <span>{emoji}</span>
+                                <span className="font-black">{users.length}</span>
+                              </button>
+                            )
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
-                  <Button onClick={() => setViewState('CREATE')} className="w-full h-20 border-4 border-foreground bg-background text-foreground text-xl font-black uppercase rounded-none hover:bg-foreground hover:text-background transition-all">DEPLOY SECRET MESSAGE</Button>
-               </motion.div>
-            )}
+                ))}
+                
+                {/* TYPING INDICATOR */}
+                {typingUsers.length > 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex flex-col items-start self-start"
+                  >
+                    <div className="flex items-center gap-1 px-2 mb-1">
+                      <span className="text-[7px] font-mono text-foreground/40">{typingUsers.join(', ')}</span>
+                    </div>
+                    <div className={cn(
+                      "p-3 brutal-border bg-accent/30 text-foreground flex items-center gap-1.5",
+                      bubbleStyle === 'ROUNDED' && "rounded-2xl",
+                      bubbleStyle === 'MINIMAL' && "border-none border-l-2 border-foreground/30 pl-4"
+                    )}>
+                      <motion.div animate={{ opacity: [0.2, 1, 0.2] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1 h-1 bg-foreground rounded-full" />
+                      <motion.div animate={{ opacity: [0.2, 1, 0.2] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1 h-1 bg-foreground rounded-full" />
+                      <motion.div animate={{ opacity: [0.2, 1, 0.2] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1 h-1 bg-foreground rounded-full" />
+                    </div>
+                  </motion.div>
+                )}
+                <div ref={chatBottomRef} />
+              </div>
 
-            {viewState === 'SECURITY' && (
-              <motion.div key="security" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12 bg-background text-foreground p-8 md:p-16 border-4 border-foreground">
-                <div className="space-y-2">
-                  <h2 className="text-[60px] md:text-[100px] font-display leading-none uppercase">Shielded.</h2>
-                  <p className="font-medium opacity-50 uppercase tracking-widest text-[10px]">End-to-End Cryptography for Personal Privacy.</p>
+              {/* INPUT RAIL */}
+              <div className="mt-8 space-y-4">
+                {attachedFile && (
+                  <div className={cn("p-4 brutal-border flex items-center justify-between animate-in fade-in slide-in-from-bottom-2", currentTheme.bg + "/10", currentTheme.border)}>
+                    <div className="flex items-center gap-4">
+                      {attachedFile.type.startsWith('image/') ? (
+                        <img src={attachedFile.data} className="w-12 h-12 brutal-border object-cover" alt="Ready to transmit" />
+                      ) : (
+                        <File className="w-8 h-8" />
+                      )}
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-mono leading-none">{attachedFile.name}</span>
+                        <span className="text-[8px] font-mono opacity-40">READY FOR SECURE TRANSMISSION</span>
+                      </div>
+                    </div>
+                    <button onClick={() => setAttachedFile(null)} className="hover:text-red-500">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex gap-4">
+                  <div className="relative flex-1">
+                    <Input 
+                      placeholder="ENTER CIPHER TEXT..." 
+                      className="pr-20 h-16"
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                    />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                       <label className="cursor-pointer hover:text-neon transition-colors">
+                        <Upload className="w-5 h-5" />
+                        <input type="file" className="hidden" onChange={handleFileChange} accept="image/*,.pdf,.txt" />
+                       </label>
+                    </div>
+                  </div>
+                  <Button onClick={handleSend} className="h-16 w-32">
+                    SEND <Send className="ml-1 w-4 h-4" />
+                  </Button>
                 </div>
 
-                <div className="space-y-8">
-                   <div className="space-y-4">
-                      <ShieldCheck className="w-12 h-12 text-neon" />
-                      <h3 className="text-3xl font-black uppercase tracking-tighter">Zero-Knowledge Architecture</h3>
-                      <p className="opacity-60 text-sm leading-relaxed">
-                        IDB is engineered on the principle that the platform should never be able to access your private conversations. 
-                        By leveraging the Web Crypto API, your secret password acts as the primary decryption key that remains on your device. 
-                        We never transmit your password to any server. Even if our database was breached, your messages remain secure, encrypted blobs.
-                      </p>
-                   </div>
+                {showEntropy && (
+                  <div className="flex justify-between items-center opacity-40 text-[7px] font-mono tracking-widest px-1">
+                    <span>ENTROPY: 100% // AES-GCM-256</span>
+                    <span>SIGNAL: AUTHENTICATED_SESSION</span>
+                  </div>
+                )}
+              </div>
 
-                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
-                         <span className="text-[9px] font-black uppercase opacity-40">Encryption Engine</span>
-                         <p className="font-bold">AES-GCM 256-bit</p>
+              {/* SETTINGS MODAL */}
+              <AnimatePresence>
+                {showSettings && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+                  >
+                    <motion.div 
+                      initial={{ scale: 0.9, opacity: 0, rotate: -2 }}
+                      animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                      exit={{ scale: 0.9, opacity: 0, rotate: 2 }}
+                      className="bg-accent brutal-border p-8 max-w-sm w-full space-y-8 brutal-shadow"
+                    >
+                      <div className="flex justify-between items-center border-b border-foreground/10 pb-4">
+                        <h4 className="text-2xl">PROTOCOL_SETTINGS</h4>
+                        <button onClick={() => setShowSettings(false)}><X className="w-6 h-6 hover:rotate-90 transition-transform" /></button>
                       </div>
-                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
-                         <span className="text-[9px] font-black uppercase opacity-40">Key Derivation</span>
-                         <p className="font-bold">PBKDF2 (100k Iterations)</p>
-                      </div>
-                      <div className="p-6 bg-accent/20 border border-foreground/10 space-y-2">
-                         <span className="text-[9px] font-black uppercase opacity-40">Safe Storage</span>
-                         <p className="font-bold">Encrypted Shards Only</p>
-                      </div>
-                   </div>
 
-                   <div className="p-8 border-2 border-foreground/20 space-y-6">
-                      <h2 className="text-[30px] font-display leading-none uppercase text-neon">Black Box Core.</h2>
-                      <div className="space-y-4 max-w-xl font-mono text-[10px] uppercase tracking-widest leading-loose">
-                         <p className="border-l-2 border-neon pl-6">[01] All IPC tunneled via TLS 1.3 encryption layers.</p>
-                         <p className="border-l-2 border-neon pl-6">[02] Keys derived using PBKDF2 with 100,000 iterations.</p>
-                         <p className="border-l-2 border-neon pl-6">[03] Volatile storage profile. No persistent tracking logs.</p>
-                         <p className="border-l-2 border-neon pl-6">[04] Client-side password masking prevents visual leaks.</p>
-                      </div>
-                      <div className="flex gap-4">
-                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">256</div>
-                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">BWA</div>
-                         <div className="w-10 h-10 border border-neon flex items-center justify-center text-neon font-black italic text-[10px]">GCM</div>
-                      </div>
-                   </div>
-                </div>
-              </motion.div>
-            )}
+                      <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+                        {/* THEME */}
+                        <div className="space-y-3">
+                          <label className="text-[10px] font-mono opacity-40">VISUAL_OVERSIGHT (MODE & THEME)</label>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => setIsDarkMode(!isDarkMode)}
+                              className={cn(
+                                "flex-1 flex items-center justify-center gap-2 py-3 text-[10px] font-mono brutal-border",
+                                isDarkMode ? "bg-accent/50 text-foreground" : "bg-white text-black"
+                              )}
+                            >
+                              {isDarkMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+                              {isDarkMode ? "DARK_MODE" : "LIGHT_MODE"}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-4 gap-2">
+                            {(['NEON', 'AMBER', 'CRIMSON', 'PHANTOM'] as Theme[]).map((t) => (
+                              <button 
+                                key={t}
+                                onClick={() => setTheme(t)}
+                                className={cn(
+                                  "h-10 brutal-border border-foreground/20 hover:border-foreground transition-all flex items-center justify-center",
+                                  theme === t && "bg-foreground text-background border-foreground"
+                                )}
+                              >
+                                <div className={cn("w-3 h-3 rounded-full", themes[t].bg)} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
 
-            {/* Error / Expired States simplified for the Wilder UI */}
-            {['EXPIRED', 'ERROR'].includes(viewState) && (
-              <motion.div key="status" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="space-y-12 py-20">
-                 <h2 className="text-[60px] md:text-[120px] font-display leading-none uppercase opacity-10 text-foreground">TERMINATED.</h2>
-                 <p className="text-xl font-black uppercase italic border-l-8 border-foreground pl-8 max-w-md text-foreground">
-                   {viewState === 'EXPIRED' ? 'The data you are looking for has been purged or never existed within this node.' : error}
-                 </p>
-                 <Button onClick={reset} className="h-20 px-12 bg-foreground text-background text-xl font-black uppercase rounded-none hover:bg-neon hover:text-black transition-all">RESTORE NODE</Button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+                        {/* BUBBLE STYLE */}
+                        <div className="space-y-3">
+                          <label className="text-[10px] font-mono opacity-40">DATA_STRUCTURE (UI STYLE)</label>
+                          <div className="grid grid-cols-1 gap-2">
+                            {(['SHARP', 'ROUNDED', 'MINIMAL'] as BubbleStyle[]).map((s) => (
+                              <button 
+                                key={s}
+                                onClick={() => setBubbleStyle(s)}
+                                className={cn(
+                                  "p-3 brutal-border border-foreground/20 hover:border-foreground text-[9px] font-mono text-left transition-all",
+                                  bubbleStyle === s && "bg-foreground text-background border-foreground"
+                                )}
+                              >
+                                {s} :: {s === 'SHARP' ? "[BRUTALIST]" : s === 'ROUNDED' ? "[MODERN]" : "[GHOST]"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
 
-        {/* Global Footer (Sharp & Bold) */}
-        <footer className="mt-auto px-16 py-12 border-t border-foreground/10 flex justify-between items-center gap-8 text-xs font-black uppercase tracking-[0.3em] text-foreground transition-all">
-           <span className="hover:text-neon transition-colors cursor-default">App Created and designed By Bukola</span>
-           <div className="hidden md:flex gap-12 opacity-40">
-              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> LAT: 4.128° N</span>
-              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> LON: 7.006° W</span>
-              <span className="flex items-center gap-2"><div className="w-1 h-1 bg-neon shadow-[0_0_8px_#00ff00]" /> VER: 5.0.0</span>
-           </div>
-        </footer>
+                        {/* ADVANCED SECURITY TOGGLE */}
+                        <div className="border-t border-foreground/10 pt-6 space-y-4">
+                          <button 
+                            onClick={() => setShowAdvancedSecurity(!showAdvancedSecurity)}
+                            className="w-full flex justify-between items-center text-[10px] font-mono"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Shield className={cn("w-3 h-3", currentTheme.primary)} />
+                              ADVANCED_SECURITY_PARAMETERS
+                            </span>
+                            <span className="opacity-40">{showAdvancedSecurity ? "[-]" : "[+]"}</span>
+                          </button>
+
+                          <AnimatePresence>
+                            {showAdvancedSecurity && (
+                              <motion.div 
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                className="space-y-6 overflow-hidden"
+                              >
+                                <div className="space-y-3">
+                                  <label className="text-[9px] font-mono opacity-40 block">PBKDF2_ITERATION_COUNT</label>
+                                  <div className="flex gap-2">
+                                    {[50000, 100000, 250000, 500000].map(count => (
+                                      <button 
+                                        key={count}
+                                        onClick={() => setPbkdf2Iterations(count)}
+                                        className={cn(
+                                          "flex-1 py-2 text-[8px] font-mono brutal-border border-foreground/20",
+                                          pbkdf2Iterations === count && "bg-foreground text-background border-foreground"
+                                        )}
+                                      >
+                                        {count / 1000}K
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <p className="text-[7px] font-mono opacity-30 italic leading-tight">
+                                    Higher counts increase security but may impact decryption speed on older hardware. 
+                                    Default recommended: 100K.
+                                  </p>
+                                </div>
+
+                                <div className="space-y-3">
+                                  <label className="text-[10px] font-mono opacity-40">DISPLAY_PREFERENCES</label>
+                                  <div className="space-y-2">
+                                    <button 
+                                      onClick={() => setShowTimestamps(!showTimestamps)}
+                                      className="w-full flex justify-between items-center text-[10px] font-mono opacity-80 hover:opacity-100"
+                                    >
+                                      <span>SHOW TIMESTAMPS</span>
+                                      {showTimestamps ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                    </button>
+                                    <button 
+                                      onClick={() => setShowEntropy(!showEntropy)}
+                                      className="w-full flex justify-between items-center text-[10px] font-mono opacity-80 hover:opacity-100"
+                                    >
+                                      <span>DEBUG OVERLAY</span>
+                                      {showEntropy ? <Monitor className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
+                                    </button>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                        
+                        <Button 
+                          variant="danger" 
+                          className="w-full"
+                          onClick={() => {
+                            setViewState('LANDING');
+                            setActiveRoom(null);
+                            setMessages([]);
+                            setShowSettings(false);
+                          }}
+                        >
+                          ABORT_SESSION <Trash2 className="w-4 h-4 ml-2" />
+                        </Button>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          )}
+
+        </AnimatePresence>
       </main>
+
+      {/* FOOTER RAILS */}
+      <footer className="fixed bottom-0 left-0 right-0 z-50 p-6 pointer-events-none mix-blend-difference flex justify-between items-center">
+        <div className="font-mono text-[8px] opacity-20 hidden md:block">
+          ENCRYPTION: AES-256-GCM // MODE: ZERO-TRUST-CLIENT
+        </div>
+        <div className="font-mono text-[8px] opacity-20">
+          IDB_SECURE_MESSAGING // MADE FOR ANONYMITY
+        </div>
+      </footer>
+
+      {/* BACKGROUND GRAPHICS */}
+      <div className="fixed inset-0 -z-50 pointer-events-none overflow-hidden opacity-5">
+        <div className="absolute top-0 left-0 w-full h-full bg-[linear-gradient(rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:100px_100px]" />
+        <motion.div 
+          animate={{ x: [0, 100, 0], y: [0, 50, 0] }}
+          transition={{ duration: 20, repeat: Infinity }}
+          className={cn("absolute -top-1/4 -left-1/4 w-3/4 h-3/4 rounded-full blur-[120px] opacity-20", currentTheme.bg)}
+        />
+      </div>
     </div>
   );
 }

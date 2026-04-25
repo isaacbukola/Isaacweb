@@ -2,79 +2,58 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny
+    
+    // DEFAULT DENY
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
+    // SHARED UTILS
+    function incoming() { return request.resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128; }
+    function isWithinExpiry(expiresAt) { return request.time < expiresAt; }
 
-    function incoming() {
-      return request.resource.data;
-    }
+    // ROOMS
+    match /chatRooms/{roomCode} {
+      function isValidRoom(data) {
+        return data.roomCode is string && data.roomCode.size() <= 12 &&
+               data.encryptedValidator is string && data.encryptedValidator.size() <= 10000 &&
+               data.iv is string && data.iv.size() <= 128 &&
+               data.salt is string && data.salt.size() <= 128 &&
+               (data.iterations == null || (data.iterations is number && data.iterations >= 1000 && data.iterations <= 1000000)) &&
+               data.createdAt is timestamp &&
+               data.expiresAt is timestamp;
+      }
 
-    function existing() {
-      return resource.data;
-    }
-
-    function isValidSecret(data) {
-      return data.encryptedData is string && data.encryptedData.size() <= 100000 &&
-             data.iv is string && data.iv.size() <= 64 &&
-             data.salt is string && data.salt.size() <= 64 &&
-             data.viewLimit is number && data.viewLimit >= 1 && data.viewLimit <= 999999 &&
-             data.viewCount is number && data.viewCount >= 0 &&
-             data.createdAt is timestamp;
-    }
-
-    function isValidChatRoom(data) {
-      return data.roomCode is string && data.roomCode.size() <= 128 &&
-             data.encryptedValidator is string && data.encryptedValidator.size() <= 5000 &&
-             data.iv is string && data.iv.size() <= 64 &&
-             data.salt is string && data.salt.size() <= 64 &&
-             data.createdAt is timestamp &&
-             data.expiresAt is timestamp;
-    }
-
-    function isValidChatMessage(data) {
-      return data.senderId is string && data.senderId.size() <= 128 &&
-             data.encryptedText is string && data.encryptedText.size() <= 50000 &&
-             data.iv is string && data.iv.size() <= 64 &&
-             data.salt is string && data.salt.size() <= 64 &&
-             data.timestamp is timestamp;
-    }
-
-    match /secrets/{secretId} {
-      // Anyone can create a secret
-      allow create: if isValidId(secretId) && 
-                      isValidSecret(incoming()) && 
-                      incoming().viewCount == 0 &&
-                      incoming().createdAt == request.time;
-
-      // Anyone can get a secret IF the view limit hasn't been reached
-      allow get: if existing().viewCount < existing().viewLimit;
-
-      // Allow updating ONLY the viewCount
-      allow update: if isValidSecret(incoming()) &&
-                      incoming().diff(existing()).affectedKeys().hasOnly(['viewCount']) &&
-                      incoming().viewCount == existing().viewCount + 1 &&
-                      incoming().viewCount <= existing().viewLimit;
-      
-      allow delete: if false;
-    }
-
-    match /chatRooms/{roomId} {
-      allow create: if isValidId(roomId) && isValidChatRoom(incoming()) && incoming().createdAt == request.time;
+      // Anyone can create a room or get a room if they have the ID
       allow get: if true;
-    }
+      allow create: if isValidRoom(incoming());
+      
+      // MESSAGES SUBCOLLECTION
+      match /messages/{messageId} {
+        function isValidMessage(data) {
+          return data.senderId is string && data.senderId.size() <= 64 &&
+                 data.encryptedText is string && data.encryptedText.size() <= 2000000 && // 2MB for potential large file base64
+                 data.iv is string && data.iv.size() <= 128 &&
+                 data.salt is string && data.salt.size() <= 128 &&
+                 (data.iterations == null || (data.iterations is number && data.iterations >= 1000 && data.iterations <= 1000000)) &&
+                 data.timestamp is timestamp;
+        }
 
-    match /chatRooms/{roomId}/messages/{messageId} {
-      allow create: if isValidId(messageId) && isValidChatMessage(incoming()) && 
-                      incoming().timestamp == request.time &&
-                      get(/databases/$(database)/documents/chatRooms/$(roomId)).data.expiresAt > request.time;
-      allow list, get: if get(/databases/$(database)/documents/chatRooms/$(roomId)).data.expiresAt > request.time;
+        // Only allow reading and writing if the room hasn't expired
+        // Note: get(/databases/$(database)/documents/chatRooms/$(roomCode))
+        allow list, get: if isWithinExpiry(get(/databases/$(database)/documents/chatRooms/$(roomCode)).data.expiresAt);
+        allow create: if isWithinExpiry(get(/databases/$(database)/documents/chatRooms/$(roomCode)).data.expiresAt) 
+                        && isValidMessage(incoming());
+        allow update: if isWithinExpiry(get(/databases/$(database)/documents/chatRooms/$(roomCode)).data.expiresAt)
+                        && incoming().diff(resource.data).affectedKeys().hasOnly(['reactions']);
+      }
+
+      // TYPING INDICATORS
+      match /typing/{userId} {
+        allow read: if isWithinExpiry(get(/databases/$(database)/documents/chatRooms/$(roomCode)).data.expiresAt);
+        allow write: if isWithinExpiry(get(/databases/$(database)/documents/chatRooms/$(roomCode)).data.expiresAt);
+      }
     }
   }
 }

@@ -1,13 +1,27 @@
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+let db: any = null;
+let auth: any = null;
 
-// Improved connection strategy for sandboxed environments
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
+const initialize = async () => {
+  try {
+    // @ts-ignore
+    const config = await import('../../firebase-applet-config.json').then(m => m.default).catch(() => null);
+    
+    if (config) {
+      const app = initializeApp(config);
+      db = initializeFirestore(app, {
+        experimentalForceLongPolling: true,
+      }, (config as any).firestoreDatabaseId || '');
+      auth = getAuth(app);
+    }
+  } catch (e) {
+    console.warn("FIREBASE_HANDSHAKE_ERROR");
+  }
+};
 
-export const auth = getAuth(app);
+initialize();
+
+export { db, auth };
